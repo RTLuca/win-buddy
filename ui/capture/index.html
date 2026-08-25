@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>win-buddy · cattura rapida</title>
+    <link rel="stylesheet" href="../shared/theme.css" />
+    <link rel="stylesheet" href="./capture.css" />
+  </head>
+  <body class="capture-body">
+    <div class="capture">
+      <input
+        id="field"
+        class="field"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Cosa devo ricordarti? (es. «chiamare Fabio +2h», «! urgente 18:00»)"
+      />
+      <div class="parsed">
+        <span class="hint">Invio salva · Esc annulla</span>
+        <span class="chip" id="chip" hidden></span>
+      </div>
+      <div class="fallback" id="fallback">
+        <button type="button" data-quick="stasera">stasera</button>
+        <button type="button" data-quick="domattina">domani mattina</button>
+        <button type="button" data-quick="lunedì">lunedì</button>
+        <input type="datetime-local" id="picker" title="Scegli data e ora" />
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

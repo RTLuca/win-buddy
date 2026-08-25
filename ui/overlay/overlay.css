@@ -1,0 +1,158 @@
+/* L'overlay vive sopra le altre finestre: tutto trasparente tranne la
+   creatura, la nuvoletta e la pillola sobria. */
+
+.overlay-body {
+  background: transparent;
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+}
+
+#stage {
+  position: absolute;
+  inset: auto 0 0 auto;
+  width: 100%;
+  height: 100%;
+}
+
+#stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------ nuvoletta */
+
+.bubble {
+  position: absolute;
+  transform: translate(-85%, -100%);
+  min-width: 110px;
+  max-width: 240px;
+  background: #f4f1f8;
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  transform-origin: 85% 100%;
+}
+
+.bubble.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.bubble::after {
+  content: "";
+  position: absolute;
+  right: 18px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  background: inherit;
+  transform: rotate(45deg);
+  border-radius: 2px;
+}
+
+.bubble .cap {
+  display: block;
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+  margin-bottom: 2px;
+}
+
+.bubble .mono {
+  font-family: var(--mono);
+  font-size: 15px;
+}
+
+.bubble .txt {
+  line-height: 1.35;
+}
+
+.bubble.urgent {
+  background: var(--amber);
+  animation: nudge 1s ease-in-out infinite;
+}
+
+@keyframes nudge {
+  0%,
+  100% {
+    transform: translate(-85%, -100%) rotate(-1deg);
+  }
+  50% {
+    transform: translate(-85%, -104%) rotate(1deg);
+  }
+}
+
+.bubble .acts {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.bubble .acts button {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(34, 26, 51, 0.35);
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink);
+}
+
+.bubble .acts button.primary {
+  background: var(--ink);
+  color: #f4f1f8;
+  border-color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble.urgent {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------- modalità sobria */
+
+.sober {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  display: none;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 13px 7px 10px;
+  background: rgba(23, 20, 38, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  color: #dcd5ec;
+  font-family: var(--mono);
+  font-size: 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+}
+
+.sober.on {
+  display: flex;
+}
+
+.sober .led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lavender);
+}
+
+.sober .lbl {
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8a80a8;
+}

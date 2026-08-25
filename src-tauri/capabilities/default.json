@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Le tre superfici parlano col core: eventi, comandi, niente altro.",
+  "windows": ["overlay", "panel", "capture"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default"
+  ]
+}

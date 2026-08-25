@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "src-tauri"]
+
+# La shell Tauri richiede webkit2gtk su Linux e WebView2 su Windows.
+# `cargo test -p win-buddy-core` gira ovunque: tutta la logica di dominio sta lì.
+default-members = ["crates/core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/RTLuca/win-buddy"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

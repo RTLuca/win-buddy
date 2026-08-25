@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>win-buddy · pannello</title>
+    <link rel="stylesheet" href="../shared/theme.css" />
+    <link rel="stylesheet" href="./panel.css" />
+  </head>
+  <body class="panel-body">
+    <header class="head">
+      <nav class="tabs" id="tabs">
+        <button type="button" data-tab="open" class="on">Aperte</button>
+        <button type="button" data-tab="archive">Archivio</button>
+        <button type="button" data-tab="pomodoro">Pomodoro</button>
+        <button type="button" data-tab="settings">Impostazioni</button>
+      </nav>
+    </header>
+
+    <!-- ------------------------------------------------ note aperte -->
+    <section id="tab-open" class="tab on">
+      <form id="newNote" class="new-note">
+        <input
+          id="newNoteText"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Nuova nota… (es. «preventivo giovedì 9»)"
+        />
+      </form>
+      <div id="openList" class="list"></div>
+      <footer class="foot" id="openFoot"></footer>
+    </section>
+
+    <!-- --------------------------------------------------- archivio -->
+    <section id="tab-archive" class="tab">
+      <input
+        id="searchBox"
+        class="search"
+        type="search"
+        placeholder="Cerca nelle note…  ⌕"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div id="archiveList" class="list"></div>
+    </section>
+
+    <!-- --------------------------------------------------- pomodoro -->
+    <section id="tab-pomodoro" class="tab">
+      <div id="pomoActive" class="pomo-active" hidden>
+        <div class="pomo-kind" id="pomoKind"></div>
+        <div class="pomo-clock" id="pomoClock">--:--</div>
+        <div class="pomo-label" id="pomoLabel"></div>
+        <button type="button" id="pomoAbort" class="ghost">Interrompi</button>
+      </div>
+      <div id="pomoIdle" class="pomo-idle">
+        <input
+          id="pomoTask"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Su cosa lavori? (facoltativo)"
+        />
+        <div class="pomo-buttons">
+          <button type="button" id="startFocus" class="primary">Avvia focus</button>
+          <button type="button" id="startBreak" class="ghost">Pausa</button>
+        </div>
+      </div>
+      <div class="pomo-today" id="pomoToday"></div>
+      <h3 class="section-title">Storico</h3>
+      <div id="historyList" class="list"></div>
+    </section>
+
+    <!-- ----------------------------------------------- impostazioni -->
+    <section id="tab-settings" class="tab">
+      <h3 class="section-title">Creatura</h3>
+      <div id="creatures" class="creatures"></div>
+
+      <h3 class="section-title">Overlay</h3>
+      <div class="form">
+        <label class="row">
+          <span>Modalità sobria (pillola, niente 3D)</span>
+          <input type="checkbox" id="setSober" />
+        </label>
+        <label class="row">
+          <span>Angolo dello schermo</span>
+          <select id="setCorner">
+            <option value="bottom-right">basso a destra</option>
+            <option value="bottom-left">basso a sinistra</option>
+            <option value="top-right">alto a destra</option>
+            <option value="top-left">alto a sinistra</option>
+          </select>
+        </label>
+        <label class="row">
+          <span>DND automatico su fullscreen e presentazioni</span>
+          <input type="checkbox" id="setAutoDnd" />
+        </label>
+        <label class="row">
+          <span>Spegni l'overlay dopo (minuti di inattività)</span>
+          <input type="number" id="setIdleSleep" min="1" max="240" />
+        </label>
+      </div>
+
+      <h3 class="section-title">Pomodoro</h3>
+      <div class="form">
+        <label class="row">
+          <span>Focus (minuti)</span>
+          <input type="number" id="setFocus" min="5" max="120" />
+        </label>
+        <label class="row">
+          <span>Pausa breve (minuti)</span>
+          <input type="number" id="setShort" min="1" max="60" />
+        </label>
+        <label class="row">
+          <span>Pausa lunga (minuti)</span>
+          <input type="number" id="setLong" min="5" max="90" />
+        </label>
+        <label class="row">
+          <span>Pausa lunga ogni (sessioni)</span>
+          <input type="number" id="setEvery" min="2" max="12" />
+        </label>
+      </div>
+    </section>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

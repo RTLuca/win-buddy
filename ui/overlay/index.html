@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>win-buddy · overlay</title>
+    <link rel="stylesheet" href="../shared/theme.css" />
+    <link rel="stylesheet" href="./overlay.css" />
+  </head>
+  <body class="overlay-body">
+    <div id="stage"></div>
+
+    <!-- modalità sobria: una pillola, nessun canvas (§ 9.3) -->
+    <div id="sober" class="sober">
+      <span class="led" id="soberLed"></span>
+      <span><span class="lbl" id="soberLbl">pronto</span> <span id="soberTime"></span></span>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

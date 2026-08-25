@@ -1,0 +1,44 @@
+/* win-buddy · lingua visiva condivisa.
+   Nessun font remoto: l'app funziona con la scheda di rete spenta (§ 2). */
+
+:root {
+  --paper: #e4e0eb;
+  --paper-2: #d6d0e0;
+  --ink: #221a33;
+  --ink-mid: #5b5170;
+  --night-1: #2a1f4a;
+  --night-2: #150f2b;
+  --surface: #171426;
+  --surface-2: #201b33;
+  --line: rgba(255, 255, 255, 0.1);
+  --text: #cfc7e4;
+  --text-dim: #7a7196;
+  --moss: #57a98b;
+  --amber: #f2b441;
+  --sky: #9bd4f5;
+  --lavender: #bfb3e8;
+  --celebrate: #8ce0a8;
+  --sleep: #4a4270;
+  --radius: 12px;
+
+  --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  --serif: Georgia, "Times New Roman", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}

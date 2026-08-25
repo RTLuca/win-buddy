@@ -1,0 +1,743 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>desk-buddy — mockup desktop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<style>
+  :root {
+    --paper:   #E4E0EB;
+    --ink:     #221A33;
+    --ink-mid: #5B5170;
+    --moss:    #57A98B;
+    --amber:   #F2B441;
+    --sky:     #9BD4F5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1220px; margin: 0 auto; padding: 34px 20px 60px; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--ink-mid); margin: 0 0 8px;
+  }
+  h1 {
+    font-family: Fraunces, Georgia, serif; font-weight: 600;
+    font-size: clamp(30px, 5vw, 46px); line-height: 1; letter-spacing: -0.02em;
+    margin: 0 0 12px;
+  }
+  .lede { max-width: 60ch; margin: 0 0 22px; color: var(--ink-mid); font-size: 15px; line-height: 1.55; }
+
+  /* --------- selettore di scenario --------- */
+  .scenarios { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
+  .sc {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 8px 13px; border: 1.5px solid var(--ink); border-radius: 999px;
+    background: transparent; color: inherit; cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .sc:hover { background: #D6D0E0; }
+  .sc:focus-visible { outline: 3px solid var(--moss); outline-offset: 2px; }
+  .sc[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+  /* --------- lo schermo --------- */
+  .screen {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    min-height: 460px;
+    border: 1.5px solid var(--ink);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 6px 6px 0 rgba(34, 26, 51, 0.16);
+    background: linear-gradient(168deg, #1E2A4A 0%, #2B2350 46%, #402A56 100%);
+    font-size: 13px;
+    isolation: isolate;
+  }
+  /* sfondo: forme morbide, nessun logo */
+  .screen::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(60% 45% at 78% 22%, rgba(155, 212, 245, 0.20), transparent 70%),
+      radial-gradient(50% 40% at 18% 78%, rgba(87, 169, 139, 0.18), transparent 70%);
+  }
+  .screen::after {
+    content: "";
+    position: absolute; left: -8%; bottom: 8%; width: 116%; height: 46%;
+    background: linear-gradient(180deg, rgba(255,255,255,0.045), transparent);
+    border-radius: 50% 50% 0 0 / 70% 70% 0 0;
+    transform: rotate(-3deg);
+  }
+
+  /* --------- finestre applicative --------- */
+  .win {
+    position: absolute;
+    background: #171426;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+    color: #C6BEDD;
+  }
+  .win-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px;
+    background: #201B33;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    font-size: 11px;
+  }
+  .win-bar .dot { width: 8px; height: 8px; border-radius: 50%; background: #4A4270; }
+  .win-bar .title { opacity: 0.72; font-size: 11px; }
+  .win-bar .spacer { flex: 1; }
+  .win-bar .ctl { width: 22px; text-align: center; opacity: 0.45; font-size: 11px; }
+
+  .code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px; line-height: 1.65;
+    padding: 10px 12px 14px;
+    white-space: pre;
+    overflow: hidden;
+  }
+  .code .ln { color: #4A4270; display: inline-block; width: 20px; }
+  .k { color: #C792EA; }  .s { color: #A5D6A7; }
+  .c { color: #5B5170; }  .f { color: #82AAFF; }
+  .t { color: #FFCB6B; }
+
+  .win-editor { left: 3.5%; top: 7%; width: 52%; }
+  .win-term   { left: 30%; top: 47%; width: 45%; }
+
+  .tabs { display: flex; gap: 2px; padding: 0 8px; background: #1B1729; }
+  .tab {
+    font-size: 10.5px; padding: 6px 11px; color: #6E648C;
+    border-top: 2px solid transparent;
+  }
+  .tab.on { background: #171426; color: #C6BEDD; border-top-color: var(--moss); }
+
+  /* --------- barra applicazioni --------- */
+  .taskbar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 42px;
+    background: rgba(20, 16, 34, 0.82);
+    backdrop-filter: blur(14px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 40;
+  }
+  .tb-apps { display: flex; gap: 9px; }
+  .tb-app {
+    width: 26px; height: 26px; border-radius: 6px;
+    background: rgba(255,255,255,0.09);
+    border: 1px solid rgba(255,255,255,0.10);
+    position: relative;
+  }
+  .tb-app.active::after {
+    content: ""; position: absolute; left: 50%; bottom: -6px;
+    transform: translateX(-50%); width: 11px; height: 2px; border-radius: 2px;
+    background: var(--sky);
+  }
+  .tb-app.buddy { background: rgba(87, 169, 139, 0.34); border-color: rgba(87,169,139,0.5); }
+  .tb-app.buddy.muted { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.10); }
+  .tb-right {
+    position: absolute; right: 12px; top: 0; height: 100%;
+    display: flex; align-items: center; gap: 12px;
+    font-size: 10.5px; color: #A99FC4;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  .tray-badge {
+    position: relative; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--amber); display: none;
+  }
+  .tray-badge.on { display: block; }
+
+  /* --------- il buddy in overlay --------- */
+  .overlay {
+    position: absolute; right: 26px; bottom: 46px;
+    width: 190px; height: 190px;
+    z-index: 60;
+    pointer-events: none;
+  }
+  .overlay canvas { display: block; width: 100%; height: 100%; }
+  .overlay.hidden { display: none; }
+
+  .bubble {
+    position: absolute; right: 96px; bottom: 118px;
+    min-width: 118px;
+    background: #F4F1F8; color: var(--ink);
+    border-radius: 12px;
+    padding: 9px 12px;
+    font-size: 12px; font-weight: 500;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.42);
+    z-index: 61;
+    transform-origin: 90% 100%;
+  }
+  .bubble.hidden { display: none; }
+  .bubble::after {
+    content: ""; position: absolute; right: 16px; bottom: -6px;
+    width: 12px; height: 12px; background: inherit; transform: rotate(45deg);
+    border-radius: 2px;
+  }
+  .bubble .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; letter-spacing: 0.01em; }
+  .bubble .cap {
+    display: block; font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase;
+    color: var(--ink-mid); margin-bottom: 2px;
+  }
+  .bubble.urgent { background: var(--amber); animation: nudge 1s ease-in-out infinite; }
+  @keyframes nudge {
+    0%,100% { transform: rotate(-1deg) translateY(0); }
+    50%     { transform: rotate(1deg) translateY(-3px); }
+  }
+  .bubble .acts { display: flex; gap: 6px; margin-top: 8px; }
+  .bubble .acts button {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 10.5px; font-weight: 600;
+    padding: 4px 9px; border-radius: 6px; cursor: default;
+    border: 1px solid rgba(34,26,51,0.35); background: rgba(255,255,255,0.5); color: var(--ink);
+  }
+  .bubble .acts button.primary { background: var(--ink); color: #F4F1F8; border-color: var(--ink); }
+
+  /* --------- modalità sobria --------- */
+  .sober {
+    position: absolute; right: 26px; bottom: 52px;
+    display: none; align-items: center; gap: 9px;
+    padding: 7px 13px 7px 10px;
+    background: rgba(23, 20, 38, 0.92);
+    border: 1px solid rgba(255,255,255,0.13);
+    border-radius: 999px;
+    color: #DCD5EC;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.4);
+    z-index: 60;
+  }
+  .sober.on { display: flex; }
+  .sober .led { width: 8px; height: 8px; border-radius: 50%; background: var(--moss); }
+  .sober .lbl { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #8A80A8; }
+
+  /* --------- cattura rapida --------- */
+  .capture {
+    position: absolute; left: 50%; top: 27%; transform: translateX(-50%);
+    width: 62%; max-width: 520px;
+    background: rgba(23, 20, 38, 0.97);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 12px;
+    box-shadow: 0 26px 60px rgba(0,0,0,0.6);
+    padding: 15px 17px 13px;
+    display: none; z-index: 70;
+  }
+  .capture.on { display: block; }
+  .capture .field {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 15px; color: #EDE8F7;
+  }
+  .capture .caret {
+    display: inline-block; width: 1.5px; height: 16px; background: var(--sky);
+    vertical-align: -3px; margin-left: 1px; animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
+  .capture .parsed {
+    margin-top: 11px; padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.10);
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px; color: #8A80A8;
+  }
+  .capture .chip {
+    background: rgba(87,169,139,0.2); border: 1px solid rgba(87,169,139,0.45);
+    color: #93D9BC; padding: 3px 9px; border-radius: 999px;
+  }
+
+  /* --------- pannello note --------- */
+  .panel {
+    position: absolute; right: 26px; bottom: 52px;
+    width: 288px;
+    background: rgba(23, 20, 38, 0.97);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 12px;
+    box-shadow: 0 24px 54px rgba(0,0,0,0.55);
+    overflow: hidden; display: none; z-index: 62;
+  }
+  .panel.on { display: block; }
+  .panel-head {
+    display: flex; gap: 3px; padding: 9px 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.09);
+  }
+  .panel-head span {
+    font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 6px 10px; color: #7A7196; border-bottom: 2px solid transparent;
+  }
+  .panel-head span.on { color: #E4DEF2; border-bottom-color: var(--moss); }
+  .note {
+    display: flex; gap: 9px; align-items: flex-start;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    color: #CFC7E4; font-size: 12.5px; line-height: 1.35;
+  }
+  .note .box {
+    width: 13px; height: 13px; border-radius: 3.5px; margin-top: 1px;
+    border: 1.5px solid #5B5170; flex: none;
+  }
+  .note.done { color: #6E648C; }
+  .note.done .box { background: var(--moss); border-color: var(--moss); }
+  .note.done .txt { text-decoration: line-through; }
+  .note .when {
+    display: block; margin-top: 3px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10px; color: #7A7196;
+  }
+  .note .when.late { color: var(--amber); }
+  .panel-foot {
+    padding: 9px 12px; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10px; color: #6E648C; display: flex; justify-content: space-between;
+  }
+
+  /* --------- annotazione --------- */
+  .note-line {
+    display: flex; gap: 10px; align-items: baseline;
+    margin-top: 16px; font-size: 13.5px; color: var(--ink-mid); line-height: 1.55;
+  }
+  .note-line strong { color: var(--ink); font-weight: 600; }
+  .scale {
+    margin-top: 10px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; color: var(--ink-mid);
+  }
+
+  @media (max-width: 780px) {
+    .screen { min-height: 380px; font-size: 11px; }
+    .win-editor { width: 58%; }
+    .win-term { display: none; }
+    .overlay { width: 140px; height: 140px; right: 12px; bottom: 44px; }
+    .bubble { right: 74px; bottom: 96px; font-size: 11px; }
+    .panel { width: 230px; right: 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bubble.urgent { animation: none; }
+    .capture .caret { animation: none; }
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Mockup — overlay su Windows 11</p>
+  <h1>Come appare davvero</h1>
+  <p class="lede">
+    Il buddy sta sopra le finestre, in basso a destra, senza rubare il focus e senza
+    intercettare i clic. Prova gli scenari: sono gli stessi stati che il core può emettere.
+  </p>
+
+  <div class="scenarios" id="scenarios" role="group" aria-label="Scenari"></div>
+
+  <div class="screen" id="screen">
+    <!-- finestra editor -->
+    <div class="win win-editor">
+      <div class="win-bar">
+        <span class="dot"></span>
+        <span class="title">buddy.ts — desk-buddy</span>
+        <span class="spacer"></span>
+        <span class="ctl">—</span><span class="ctl">▢</span><span class="ctl">✕</span>
+      </div>
+      <div class="tabs">
+        <span class="tab on">buddy.ts</span>
+        <span class="tab">scheduler.rs</span>
+        <span class="tab">overlay.rs</span>
+      </div>
+<div class="code"><span class="ln">18</span><span class="c">/** Gli stati che il core può chiedere. */</span>
+<span class="ln">19</span><span class="k">export type</span> <span class="t">BuddyState</span> =
+<span class="ln">20</span>  | <span class="s">"idle"</span>       <span class="c">// nulla in corso</span>
+<span class="ln">21</span>  | <span class="s">"focus"</span>      <span class="c">// sessione attiva</span>
+<span class="ln">22</span>  | <span class="s">"break"</span>      <span class="c">// pausa in corso</span>
+<span class="ln">23</span>  | <span class="s">"alert"</span>      <span class="c">// ti sta chiedendo qualcosa</span>
+<span class="ln">24</span>  | <span class="s">"celebrate"</span>
+<span class="ln">25</span>  | <span class="s">"sleep"</span>;
+<span class="ln">26</span>
+<span class="ln">27</span><span class="k">export interface</span> <span class="t">Buddy</span> {
+<span class="ln">28</span>  <span class="f">mount</span>(scene: <span class="t">Scene</span>): <span class="t">Group</span>;
+<span class="ln">29</span>  <span class="f">setState</span>(state: <span class="t">BuddyState</span>): <span class="k">void</span>;
+<span class="ln">30</span>  <span class="f">getAnchor</span>(): <span class="t">Vector3</span>;
+<span class="ln">31</span>  <span class="f">dispose</span>(): <span class="k">void</span>;
+<span class="ln">32</span>}</div>
+    </div>
+
+    <!-- terminale -->
+    <div class="win win-term">
+      <div class="win-bar">
+        <span class="dot"></span>
+        <span class="title">pwsh — A:\Repository\desk-buddy</span>
+        <span class="spacer"></span>
+        <span class="ctl">—</span><span class="ctl">▢</span><span class="ctl">✕</span>
+      </div>
+<div class="code"><span class="c">&gt;</span> cargo run
+   <span class="s">Compiling</span> desk-buddy-core v0.1.0
+    <span class="s">Finished</span> dev [unoptimized] in 4.21s
+     <span class="s">Running</span> `target\debug\desk-buddy.exe`
+<span class="c">[core]</span> store aperto · 14 note · 3 aperte
+<span class="c">[core]</span> recupero: 0 scadute mentre era spento
+<span class="c">[core]</span> tick scheduler ogni 30s
+<span class="c">[core]</span> webview creata in 312ms
+<span class="c">[core]</span> working set: 11.4 MB (core) + 96 MB (overlay)</div>
+    </div>
+
+    <!-- cattura rapida -->
+    <div class="capture" id="capture">
+      <div class="field">chiamare il commercialista <span class="caret"></span></div>
+      <div class="parsed">
+        <span>Ctrl+Alt+Spazio · Invio per salvare</span>
+        <span class="chip">+2h → oggi 17:47</span>
+      </div>
+    </div>
+
+    <!-- pannello note -->
+    <div class="panel" id="panel">
+      <div class="panel-head">
+        <span class="on">Aperte</span><span>Archivio</span><span>Pomodoro</span>
+      </div>
+      <div class="note">
+        <span class="box"></span>
+        <span class="txt">Rivedere la PR di Fabio sul modulo integrazione
+          <span class="when late">scaduta 12 min fa</span></span>
+      </div>
+      <div class="note">
+        <span class="box"></span>
+        <span class="txt">Chiamare il commercialista
+          <span class="when">oggi 17:47</span></span>
+      </div>
+      <div class="note">
+        <span class="box"></span>
+        <span class="txt">Preventivo Venitem — chiudere entro giovedì
+          <span class="when">gio 28/08 09:00</span></span>
+      </div>
+      <div class="note done">
+        <span class="box"></span>
+        <span class="txt">Aggiornare le migration TypeORM
+          <span class="when">completata ieri</span></span>
+      </div>
+      <div class="panel-foot"><span>3 aperte · 11 in archivio</span><span>cerca ⌕</span></div>
+    </div>
+
+    <!-- modalità sobria -->
+    <div class="sober" id="sober">
+      <span class="led" id="soberLed"></span>
+      <span><span class="lbl">focus</span> <span id="soberTime">17:42</span></span>
+    </div>
+
+    <!-- nuvoletta + creatura -->
+    <div class="bubble" id="bubble"></div>
+    <div class="overlay" id="overlay"></div>
+
+    <!-- barra applicazioni -->
+    <div class="taskbar">
+      <div class="tb-apps">
+        <span class="tb-app"></span>
+        <span class="tb-app active"></span>
+        <span class="tb-app active"></span>
+        <span class="tb-app"></span>
+        <span class="tb-app buddy" id="tbBuddy"></span>
+      </div>
+      <div class="tb-right">
+        <span class="tray-badge" id="trayBadge"></span>
+        <span id="clock">15:47</span>
+        <span>mar 25/08</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="note-line"><strong id="scTitle"></strong> <span id="scDesc"></span></p>
+  <p class="scale" id="scaleNote">scala del mockup ≈ 1:2 · a schermo intero la creatura occupa circa 140 px di altezza</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var INK = 0x1a1330;
+
+  var LED = {
+    idle: 0xBFB3E8, focus: 0x57A98B, break: 0x9BD4F5,
+    alert: 0xF2B441, celebrate: 0x8CE0A8, sleep: 0x4A4270
+  };
+
+  /* ================= scena ================= */
+  var host = document.getElementById("overlay");
+  var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  host.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(36, 1, 0.1, 60);
+  camera.position.set(0, 0.2, 6.6);
+
+  var key = new THREE.DirectionalLight(0xffffff, 1.0);
+  key.position.set(2, 3.5, 3);
+  scene.add(key);
+  var rim = new THREE.DirectionalLight(0x9BD4F5, 0.5);
+  rim.position.set(-2.5, 1, -2);
+  scene.add(rim);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+  var ramp = (function () {
+    var d = new Uint8Array([70,70,70,255, 170,170,170,255, 255,255,255,255]);
+    var tex = new THREE.DataTexture(d, 3, 1, THREE.RGBAFormat);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  })();
+
+  function toon(c) { return new THREE.MeshToonMaterial({ color: c, gradientMap: ramp }); }
+  function flat(c) { return new THREE.MeshBasicMaterial({ color: c }); }
+
+  function part(geo, mat, x, y, z) {
+    var m = new THREE.Mesh(geo, mat);
+    m.position.set(x || 0, y || 0, z || 0);
+    var o = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: INK, side: THREE.BackSide }));
+    o.scale.multiplyScalar(1.06);
+    m.add(o);
+    return m;
+  }
+
+  function eyeball(s) {
+    var g = new THREE.Group();
+    g.add(new THREE.Mesh(new THREE.SphereGeometry(s, 18, 14), flat(0xF6F2FF)));
+    var p = new THREE.Mesh(new THREE.SphereGeometry(s * 0.52, 14, 10), flat(INK));
+    p.position.z = s * 0.62;
+    g.add(p);
+    return g;
+  }
+
+  /* ---- Cotone, il draghetto di nuvola ---- */
+  var BODY = 0xE8ECF5, ACC = 0x7FB8E8;
+  var g = new THREE.Group();
+  var p = {};
+
+  p.body = part(new THREE.SphereGeometry(1.05, 30, 22), toon(BODY), 0, -0.15, 0);
+  p.body.scale.set(1.05, 0.95, 1);
+  g.add(p.body);
+  var base = p.body.scale.clone();
+
+  p.head = new THREE.Group();
+  p.head.position.set(0, 0.62, 0.16);
+  g.add(p.head);
+
+  var snout = part(new THREE.SphereGeometry(0.42, 18, 14), toon(BODY), 0, -0.12, 0.72);
+  snout.scale.set(1, 0.78, 1.05);
+  p.head.add(snout);
+
+  p.eyeL = eyeball(0.19); p.eyeL.position.set(-0.32, 0.16, 0.6); p.head.add(p.eyeL);
+  p.eyeR = eyeball(0.19); p.eyeR.position.set(0.32, 0.16, 0.6); p.head.add(p.eyeR);
+
+  var hornL = part(new THREE.ConeGeometry(0.11, 0.4, 10), toon(ACC), -0.34, 0.62, -0.06);
+  hornL.rotation.z = 0.32;
+  var hornR = part(new THREE.ConeGeometry(0.11, 0.4, 10), toon(ACC), 0.34, 0.62, -0.06);
+  hornR.rotation.z = -0.32;
+  p.head.add(hornL, hornR);
+
+  p.wingL = part(new THREE.ConeGeometry(0.5, 0.95, 4), toon(ACC), -1.0, 0.2, -0.25);
+  p.wingL.rotation.set(0, 0, 1.5); p.wingL.scale.set(1, 1, 0.35);
+  p.wingR = part(new THREE.ConeGeometry(0.5, 0.95, 4), toon(ACC), 1.0, 0.2, -0.25);
+  p.wingR.rotation.set(0, 0, -1.5); p.wingR.scale.set(1, 1, 0.35);
+  g.add(p.wingL, p.wingR);
+
+  p.tail = [];
+  [0.3, 0.24, 0.18, 0.12].forEach(function (s, i) {
+    var seg = part(new THREE.SphereGeometry(s, 14, 10), toon(BODY), 0, 0, -(0.85 + i * 0.34));
+    g.add(seg); p.tail.push(seg);
+  });
+
+  // organo di stato: un alone sotto la pancia, invisibile ma leggibile
+  p.halo = new THREE.Mesh(new THREE.TorusGeometry(0.78, 0.045, 8, 30), flat(LED.focus));
+  p.halo.rotation.x = Math.PI / 2;
+  p.halo.position.y = -1.28;
+  g.add(p.halo);
+
+  scene.add(g);
+
+  /* ================= stati ================= */
+  var TUNE = {
+    idle:      { bob: 0.11, speed: 1.5, squash: 0.03, tilt: 0.05, eye: 1.0,  drop: 0.0 },
+    focus:     { bob: 0.05, speed: 1.0, squash: 0.02, tilt: 0.02, eye: 0.5,  drop: -0.08 },
+    break:     { bob: 0.2,  speed: 2.2, squash: 0.09, tilt: 0.16, eye: 1.15, drop: 0.1 },
+    alert:     { bob: 0.26, speed: 6.0, squash: 0.13, tilt: 0.3,  eye: 1.3,  drop: 0.16 },
+    celebrate: { bob: 0.32, speed: 4.0, squash: 0.16, tilt: 0.12, eye: 1.2,  drop: 0.2 },
+    sleep:     { bob: 0.05, speed: 0.5, squash: 0.05, tilt: 0.0,  eye: 0.06, drop: -0.5 }
+  };
+  var state = "focus";
+  var blink = 2.2;
+
+  function setState(s) {
+    state = s;
+    p.halo.material.color.setHex(LED[s]);
+  }
+
+  function animate(t, dt) {
+    var k = TUNE[state];
+    var w = t * k.speed;
+
+    g.position.y = Math.sin(w) * k.bob + k.drop;
+    g.rotation.z = Math.sin(w * 0.7) * k.tilt * 0.35;
+    g.rotation.y = Math.sin(t * 0.3) * 0.1;
+
+    var sq = 1 - Math.sin(w) * k.squash;
+    p.body.scale.set(base.x * (2 - sq), base.y * sq, base.z * (2 - sq));
+
+    blink -= dt;
+    if (blink < -0.12) blink = 1.6 + Math.random() * 3.2;
+    var lid = (blink < 0 && state !== "sleep") ? 0.08 : k.eye;
+    p.eyeL.scale.y = lid; p.eyeR.scale.y = lid;
+
+    p.head.rotation.z = Math.sin(w * 1.1) * k.tilt * 0.5;
+    p.head.rotation.x = state === "sleep" ? 0.4 : Math.sin(w * 0.6) * 0.05;
+
+    var flap = Math.sin(w * 2.4) * (0.3 + k.bob * 1.5);
+    p.wingL.rotation.x = flap; p.wingR.rotation.x = -flap;
+
+    for (var j = 0; j < p.tail.length; j++) {
+      var ph = w * 1.4 - j * 0.55;
+      p.tail[j].position.x = Math.sin(ph) * 0.16 * (j + 1) * 0.5;
+      p.tail[j].position.y = Math.cos(ph) * 0.1 * (j + 1) * 0.35 - 0.12;
+    }
+
+    p.halo.scale.setScalar(1 + Math.sin(t * (state === "alert" ? 9 : 2)) * 0.06);
+  }
+
+  /* ================= scenari ================= */
+  var overlay = document.getElementById("overlay");
+  var bubble  = document.getElementById("bubble");
+  var capture = document.getElementById("capture");
+  var panel   = document.getElementById("panel");
+  var sober   = document.getElementById("sober");
+  var soberLed= document.getElementById("soberLed");
+  var soberTime = document.getElementById("soberTime");
+  var trayBadge = document.getElementById("trayBadge");
+  var tbBuddy = document.getElementById("tbBuddy");
+  var scTitle = document.getElementById("scTitle");
+  var scDesc  = document.getElementById("scDesc");
+
+  var SCENARIOS = [
+    {
+      id: "focus", label: "Focus", state: "focus",
+      bubble: '<span class="cap">Focus</span><span class="mono">17:42</span>',
+      title: "Sessione in corso.",
+      desc: "La creatura si stringe, sbatte le ali piano, l'alone è verde. La nuvoletta mostra solo il tempo che resta — nessun pulsante, niente da decidere."
+    },
+    {
+      id: "alert", label: "Promemoria", state: "alert", urgent: true,
+      bubble: 'Rivedere la PR di Fabio<div class="acts"><button class="primary">Fatto</button><button>Rinvia 10′</button></div>',
+      title: "Un promemoria è scaduto.",
+      desc: "Le azioni stanno dentro la nuvoletta: chiudere una nota non deve richiedere di aprire una finestra. È l'unico momento in cui l'overlay accetta i clic."
+    },
+    {
+      id: "break", label: "Pausa", state: "break",
+      bubble: '<span class="cap">Pausa breve</span><span class="mono">4:12</span>',
+      title: "Pausa dopo il quarto pomodoro.",
+      desc: "Qui il buddy propone anche le note maturate durante il focus: è il momento in cui hai la testa libera per smaltirle."
+    },
+    {
+      id: "capture", label: "Cattura rapida", state: "idle", show: "capture",
+      title: "Ctrl+Alt+Spazio, ovunque tu sia.",
+      desc: "Una riga, Invio, sparisce. Il suffisso +2h viene riconosciuto e mostrato come data risolta prima di salvare, così non ci sono sorprese."
+    },
+    {
+      id: "panel", label: "Note aperte", state: "idle", show: "panel",
+      title: "Clic sulla creatura.",
+      desc: "Aperte, archivio ricercabile, storico pomodoro. Tre schede e nient'altro: se qui comparissero priorità e tag, sarebbe un secondo backlog accanto a ClickUp."
+    },
+    {
+      id: "sober", label: "Modalità sobria", state: "focus", show: "sober",
+      title: "Quando condividi lo schermo.",
+      desc: "La creatura sparisce, resta una pillola con timer e pallino di stato. Nessun canvas: il consumo scende sotto i 60 MB, quindi è anche il ripiego su macchine lente."
+    },
+    {
+      id: "dnd", label: "DND", state: "idle", show: "dnd",
+      title: "Nascosto del tutto.",
+      desc: "La webview viene distrutta e resta solo il core. Lo scheduler però continua a girare: i promemoria si accumulano e ti aspettano all'uscita — il pallino ambra nel tray te lo dice."
+    }
+  ];
+
+  function apply(sc) {
+    capture.classList.remove("on");
+    panel.classList.remove("on");
+    sober.classList.remove("on");
+    overlay.classList.remove("hidden");
+    bubble.classList.remove("hidden", "urgent");
+    trayBadge.classList.remove("on");
+    tbBuddy.classList.remove("muted");
+
+    setState(sc.state);
+
+    if (sc.bubble) {
+      bubble.innerHTML = sc.bubble;
+      if (sc.urgent) bubble.classList.add("urgent");
+    } else {
+      bubble.classList.add("hidden");
+    }
+
+    if (sc.show === "capture") capture.classList.add("on");
+    if (sc.show === "panel") { panel.classList.add("on"); bubble.classList.add("hidden"); }
+    if (sc.show === "sober") {
+      sober.classList.add("on");
+      overlay.classList.add("hidden");
+      bubble.classList.add("hidden");
+      soberLed.style.background = "#" + LED.focus.toString(16).padStart(6, "0");
+      soberTime.textContent = "17:42";
+    }
+    if (sc.show === "dnd") {
+      overlay.classList.add("hidden");
+      bubble.classList.add("hidden");
+      trayBadge.classList.add("on");
+      tbBuddy.classList.add("muted");
+    }
+
+    scTitle.textContent = sc.title;
+    scDesc.textContent = sc.desc;
+  }
+
+  var box = document.getElementById("scenarios");
+  SCENARIOS.forEach(function (sc, i) {
+    var b = document.createElement("button");
+    b.className = "sc";
+    b.type = "button";
+    b.textContent = sc.label;
+    b.setAttribute("aria-pressed", i === 0 ? "true" : "false");
+    b.addEventListener("click", function () {
+      Array.prototype.forEach.call(box.children, function (el) {
+        el.setAttribute("aria-pressed", "false");
+      });
+      b.setAttribute("aria-pressed", "true");
+      apply(sc);
+    });
+    box.appendChild(b);
+  });
+
+  /* ================= loop ================= */
+  function resize() {
+    var r = host.getBoundingClientRect();
+    if (!r.width) return;
+    renderer.setSize(r.width, r.height, false);
+    camera.aspect = r.width / r.height;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+
+  var clock = new THREE.Clock();
+  function tick() {
+    requestAnimationFrame(tick);
+    var dt = Math.min(clock.getDelta(), 0.05);
+    if (!reduced) animate(clock.getElapsedTime(), dt);
+    renderer.render(scene, camera);
+  }
+
+  apply(SCENARIOS[0]);
+  resize();
+  tick();
+})();
+</script>

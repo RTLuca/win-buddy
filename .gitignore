@@ -1,0 +1,13 @@
+/target
+node_modules/
+/dist
+*.local
+.DS_Store
+
+# database locali di sviluppo
+*.db
+*.db-wal
+*.db-shm
+
+# artefatti di bundle
+src-tauri/gen/

@@ -1,0 +1,22 @@
+{
+  "name": "win-buddy",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/three": "^0.185.4",
+    "typescript": "^5.9.0",
+    "vite": "^6.3.0"
+  }
+}

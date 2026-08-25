@@ -1,0 +1,91 @@
+/* Una riga, Invio, sparisce (§ 11). */
+
+.capture-body {
+  background: transparent;
+  overflow: hidden;
+}
+
+.capture {
+  margin: 8px;
+  background: rgba(23, 20, 38, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.6);
+  padding: 15px 17px 13px;
+}
+
+.field {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--sans);
+  font-size: 15px;
+  color: #ede8f7;
+  caret-color: var(--sky);
+}
+
+.field::placeholder {
+  color: #6e648c;
+}
+
+.parsed {
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: #8a80a8;
+  min-height: 24px;
+}
+
+.chip {
+  background: rgba(87, 169, 139, 0.2);
+  border: 1px solid rgba(87, 169, 139, 0.45);
+  color: #93d9bc;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.chip.urgent {
+  background: rgba(242, 180, 65, 0.18);
+  border-color: rgba(242, 180, 65, 0.5);
+  color: var(--amber);
+}
+
+.fallback {
+  margin-top: 10px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.fallback button {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: #b5abd1;
+}
+
+.fallback button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.fallback input[type="datetime-local"] {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #b5abd1;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 3px 6px;
+  color-scheme: dark;
+}

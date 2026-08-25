@@ -1,0 +1,15 @@
+[package]
+name = "win-buddy-core"
+description = "Logica di dominio di win-buddy: store, scheduler, pomodoro, parsing della cattura rapida"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+regex.workspace = true
