@@ -31,7 +31,8 @@ pub fn ensure_overlay(app: &AppHandle) -> Option<WebviewWindow> {
         return Some(w);
     }
     let (x, y) = overlay_position(app);
-    let win = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("overlay/index.html".into()))
+    let started = std::time::Instant::now();
+    let built = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("overlay/index.html".into()))
         .title("win-buddy")
         .inner_size(OVERLAY_W, OVERLAY_H)
         .position(x, y)
@@ -46,8 +47,17 @@ pub fn ensure_overlay(app: &AppHandle) -> Option<WebviewWindow> {
         .skip_taskbar(true)
         .focused(false)
         .accept_first_mouse(true)
-        .build()
-        .ok()?;
+        .build();
+    let win = match built {
+        Ok(w) => {
+            log::info!("overlay creata in {} ms", started.elapsed().as_millis());
+            w
+        }
+        Err(e) => {
+            log::error!("overlay non creata: {e}");
+            return None;
+        }
+    };
 
     platform::harden_overlay(&win);
     // trasparente ai clic per impostazione predefinita (§ 10.2), altrimenti
@@ -124,12 +134,15 @@ pub fn open_panel(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("panel/index.html".into()))
+    if let Err(e) = WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("panel/index.html".into()))
         .title("win-buddy")
         .inner_size(380.0, 640.0)
         .min_inner_size(320.0, 420.0)
         .center()
-        .build();
+        .build()
+    {
+        log::error!("pannello non creato: {e}");
+    }
 }
 
 pub fn close_panel(app: &AppHandle) {
@@ -175,13 +188,16 @@ pub fn open_capture(app: &AppHandle) {
         .focused(true)
         .build();
 
-    if let Ok(win) = built {
-        let app = app.clone();
-        win.on_window_event(move |e| {
-            if matches!(e, WindowEvent::Focused(false)) {
-                close_capture(&app);
-            }
-        });
+    match built {
+        Ok(win) => {
+            let app = app.clone();
+            win.on_window_event(move |e| {
+                if matches!(e, WindowEvent::Focused(false)) {
+                    close_capture(&app);
+                }
+            });
+        }
+        Err(e) => log::error!("cattura rapida non creata: {e}"),
     }
 }
 

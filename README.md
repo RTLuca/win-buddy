@@ -78,6 +78,13 @@ Restano da fare **sulla macchina vera** (non verificabili in CI): la misura dei
 budget di risorse del § 3 con Process Explorer, il comportamento multi-monitor
 con DPI misti, e la taratura fine del rettangolo di hit-test.
 
+## Se non parte
+
+L'app scrive un log in `%APPDATA%\com.raintonic.winbuddy\win-buddy.log`:
+ogni avvio, errore e panic finisce lì, e un errore fatale mostra anche una
+finestra di dialogo. Se il processo non compare proprio, quel file è il primo
+posto dove guardare — e da allegare a una segnalazione.
+
 ## Scorciatoie
 
 | Tasti | Azione |

@@ -463,6 +463,21 @@ mod tests {
     }
 
     #[test]
+    fn opens_on_a_real_file_with_wal() {
+        let dir = std::env::temp_dir().join(format!("win-buddy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("buddy.db");
+        {
+            let s = Store::open(&path).unwrap();
+            s.insert_note("persistita", None, false, 0).unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.open_notes().unwrap().len(), 1);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn settings_upsert() {
         let s = store();
         s.set_setting("buddy.creature", "brace").unwrap();

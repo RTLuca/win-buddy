@@ -1,0 +1,5 @@
+# CRT statica su Windows/MSVC: l'exe non dipende da vcruntime140.dll.
+# Senza questo, su una macchina senza Visual C++ Redistributable l'app
+# muore all'avvio prima ancora del nostro main.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

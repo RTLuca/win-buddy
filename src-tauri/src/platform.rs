@@ -43,3 +43,31 @@ pub fn query_notification_state() -> i32 {
 
 #[cfg(not(windows))]
 pub fn harden_overlay(_window: &tauri::WebviewWindow) {}
+
+/// Finestra di errore nativa: l'ultima voce dell'app quando qualcosa la
+/// uccide prima ancora che esista una finestra.
+#[cfg(windows)]
+pub fn fatal_dialog(title: &str, msg: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SYSTEMMODAL,
+    };
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let t = wide(title);
+    let m = wide(msg);
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(m.as_ptr()),
+            PCWSTR(t.as_ptr()),
+            MB_OK | MB_ICONERROR | MB_SYSTEMMODAL,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn fatal_dialog(title: &str, msg: &str) {
+    eprintln!("{title}: {msg}");
+}
