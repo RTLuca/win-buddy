@@ -61,6 +61,7 @@ pub fn run() {
             commands::surface_ready,
             commands::open_panel,
             commands::close_panel,
+            commands::open_capture,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

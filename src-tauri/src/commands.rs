@@ -481,3 +481,12 @@ pub async fn close_panel(app: AppHandle) -> CmdResult<()> {
     surfaces::close_panel(&app);
     Ok(())
 }
+
+/// La cattura rapida dalla barra vicino al buddy: stessa finestra della
+/// scorciatoia globale.
+#[tauri::command]
+pub async fn open_capture(app: AppHandle) -> CmdResult<()> {
+    touch(&app);
+    surfaces::open_capture(&app);
+    Ok(())
+}

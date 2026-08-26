@@ -25,9 +25,9 @@
 
 .bubble {
   position: absolute;
-  transform: translate(-85%, -100%);
+  left: -9999px; /* fuori scena finché place() non la posiziona */
   min-width: 110px;
-  max-width: 240px;
+  max-width: 250px;
   background: #f4f1f8;
   color: var(--ink);
   border-radius: 12px;
@@ -38,7 +38,7 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity 180ms ease;
-  transform-origin: 85% 100%;
+  transform-origin: 50% 100%;
 }
 
 .bubble.on {
@@ -49,7 +49,8 @@
 .bubble::after {
   content: "";
   position: absolute;
-  right: 18px;
+  left: 50%;
+  margin-left: -6px;
   bottom: -6px;
   width: 12px;
   height: 12px;
@@ -84,10 +85,10 @@
 @keyframes nudge {
   0%,
   100% {
-    transform: translate(-85%, -100%) rotate(-1deg);
+    transform: rotate(-1deg);
   }
   50% {
-    transform: translate(-85%, -104%) rotate(1deg);
+    transform: rotate(1deg) translateY(-3px);
   }
 }
 
@@ -118,6 +119,55 @@
   .bubble.urgent {
     animation: none;
   }
+}
+
+/* ------------------------------------------------------- barra rapida */
+
+.quickbar {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 5px 7px;
+  background: rgba(23, 20, 38, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.quickbar.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.quickbar button {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: #dcd5ec;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.quickbar button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.quickbar button.go {
+  color: #93d9bc;
+}
+
+.quickbar button.stop {
+  color: var(--amber);
 }
 
 /* ------------------------------------------------------- modalità sobria */

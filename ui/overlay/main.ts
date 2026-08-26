@@ -29,6 +29,8 @@ const soberEl = document.getElementById("sober")!;
 const soberLed = document.getElementById("soberLed")!;
 const soberLbl = document.getElementById("soberLbl")!;
 const soberTime = document.getElementById("soberTime")!;
+const quickbar = document.getElementById("quickbar")!;
+const qbPomo = document.getElementById("qbPomo") as HTMLButtonElement;
 
 const scene = new OverlayScene(stage);
 const bubbles = new BubbleLayer(document.body);
@@ -56,20 +58,10 @@ function reportHitbox(creature: ScreenRect | null): void {
     rect = { x: r.left, y: r.top, w: r.width, h: r.height };
   } else {
     rect = creature;
-    const b = bubbles.rect();
-    if (b) {
-      if (rect) {
-        const x = Math.min(rect.x, b.x);
-        const y = Math.min(rect.y, b.y);
-        rect = {
-          x,
-          y,
-          w: Math.max(rect.x + rect.w, b.x + b.w) - x,
-          h: Math.max(rect.y + rect.h, b.y + b.h) - y,
-        };
-      } else {
-        rect = b;
-      }
+    rect = union(rect, bubbles.rect());
+    if (quickbar.classList.contains("on")) {
+      const q = quickbar.getBoundingClientRect();
+      rect = union(rect, { x: q.left, y: q.top, w: q.width, h: q.height });
     }
   }
   if (!rect) return;
@@ -94,10 +86,58 @@ function reportHitbox(creature: ScreenRect | null): void {
   void ipc.hittestUpdate(n.x, n.y, n.w, n.h);
 }
 
+function union(a: ScreenRect | null, b: ScreenRect | null): ScreenRect | null {
+  if (!a) return b;
+  if (!b) return a;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    w: Math.max(a.x + a.w, b.x + b.w) - x,
+    h: Math.max(a.y + a.h, b.y + b.h) - y,
+  };
+}
+
 scene.onFrame = (anchor, creature) => {
   bubbles.place(anchor);
   reportHitbox(creature);
 };
+
+// ------------------------------------------------------------ barra rapida
+
+// Compare quando il cursore è sulla creatura (cioè quando la finestra
+// accetta i clic) e resta un attimo dopo che se n'è andato.
+let qbTimer = 0;
+function pokeQuickbar(): void {
+  if (mode === "sober") return;
+  quickbar.classList.add("on");
+  window.clearTimeout(qbTimer);
+  qbTimer = window.setTimeout(() => quickbar.classList.remove("on"), 1600);
+}
+document.body.addEventListener("mousemove", pokeQuickbar);
+
+function refreshQuickbarPomo(): void {
+  const active = lastState.state === "focus" || lastState.state === "break";
+  qbPomo.textContent = active ? "■" : "▶";
+  qbPomo.classList.toggle("go", !active);
+  qbPomo.classList.toggle("stop", active);
+  qbPomo.title = active ? "Interrompi la sessione" : "Avvia un focus";
+}
+
+document.getElementById("qbNote")!.addEventListener("click", (e) => {
+  e.stopPropagation();
+  void ipc.openCapture();
+});
+qbPomo.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const active = lastState.state === "focus" || lastState.state === "break";
+  void (active ? ipc.pomodoroAbort() : ipc.pomodoroStart("focus"));
+});
+document.getElementById("qbPanel")!.addEventListener("click", (e) => {
+  e.stopPropagation();
+  void ipc.openPanel();
+});
 
 // ------------------------------------------------------- modalità sobria
 
@@ -107,7 +147,11 @@ function applyMode(next: "full" | "sober"): void {
   const sober = mode === "sober";
   soberEl.classList.toggle("on", sober);
   scene.setVisible(!sober);
-  if (sober) renderSober();
+  bubbles.setVisible(!sober); // in sobria parlano pillola e toast, non i fumetti
+  if (sober) {
+    quickbar.classList.remove("on");
+    renderSober();
+  }
 }
 
 function renderSober(): void {
@@ -130,6 +174,7 @@ function applyState(s: StateChanged): void {
   lastState = s;
   scene.setState(s.state);
   bubbles.setState(s);
+  refreshQuickbarPomo();
   if (mode === "sober") renderSober();
 }
 

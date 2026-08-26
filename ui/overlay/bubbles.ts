@@ -21,6 +21,10 @@ export class BubbleLayer {
   private current: BubbleShow | null = null;
   private stateInfo: StateChanged = { state: "idle" };
   private timer = 0;
+  private hiddenAll = false;
+  // posizione smorzata del countdown: la creatura balla, la bolla no
+  private sx: number | null = null;
+  private sy: number | null = null;
 
   constructor(parent: HTMLElement) {
     this.el = document.createElement("div");
@@ -28,6 +32,12 @@ export class BubbleLayer {
     parent.appendChild(this.el);
     // il countdown si ricalcola da `until − now`: nessun contatore
     this.timer = window.setInterval(() => this.renderState(), 500);
+  }
+
+  /** In modalità sobria le nuvolette non esistono: parla la pillola. */
+  setVisible(visible: boolean): void {
+    this.hiddenAll = !visible;
+    this.el.style.display = visible ? "" : "none";
   }
 
   /** Notifica dal core: ha priorità sul countdown. */
@@ -55,9 +65,40 @@ export class BubbleLayer {
     return { x: r.left, y: r.top, w: r.width, h: r.height };
   }
 
+  /**
+   * Posiziona il fumetto. Le bolle con pulsanti NON seguono la testa che
+   * balla: stanno ferme in alto al centro, altrimenti premere «Fatto»
+   * durante un festeggiamento è tiro al bersaglio. Il countdown segue
+   * l'ancora, ma smorzato e sempre dentro i bordi della finestra.
+   */
   place(anchor: Anchor): void {
-    this.el.style.left = `${anchor.x}px`;
-    this.el.style.top = `${anchor.y - 10}px`;
+    if (this.hiddenAll || !this.el.classList.contains("on")) return;
+    const w = this.el.offsetWidth;
+    const h = this.el.offsetHeight;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+
+    let x: number;
+    let y: number;
+    if (this.current) {
+      x = (W - w) / 2;
+      y = 6;
+      this.sx = null;
+      this.sy = null;
+    } else {
+      const tx = anchor.x - w * 0.5;
+      const ty = anchor.y - h - 12;
+      this.sx = this.sx === null ? tx : this.sx + (tx - this.sx) * 0.15;
+      this.sy = this.sy === null ? ty : this.sy + (ty - this.sy) * 0.15;
+      x = this.sx;
+      y = this.sy;
+    }
+
+    // mai tagliata: il fumetto resta dentro la finestra
+    x = Math.min(Math.max(x, 4), Math.max(4, W - w - 4));
+    y = Math.min(Math.max(y, 4), Math.max(4, H - h - 4));
+    this.el.style.left = `${x}px`;
+    this.el.style.top = `${y}px`;
   }
 
   private render(): void {

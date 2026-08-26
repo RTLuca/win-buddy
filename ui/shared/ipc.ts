@@ -72,6 +72,7 @@ export const monitorsList = () => invoke<MonitorInfo[]>("monitors_list");
 
 export const openPanel = () => invoke<void>("open_panel");
 export const closePanel = () => invoke<void>("close_panel");
+export const openCapture = () => invoke<void>("open_capture");
 
 /** Azione sulla bolla in cima alla pila: il core decide cosa mostrare dopo. */
 export const breakAccept = () => invoke<PomodoroStatus>("break_accept");
