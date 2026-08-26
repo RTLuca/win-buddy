@@ -126,27 +126,52 @@ setInterval(() => {
 
 // --------------------------------------------------------------- eventi
 
-void ipc.on<StateChanged>(EVT_STATE_CHANGED, (s) => {
+function applyState(s: StateChanged): void {
   lastState = s;
   scene.setState(s.state);
   bubbles.setState(s);
   if (mode === "sober") renderSober();
-});
+}
 
-void ipc.on<BubbleShow>(EVT_BUBBLE_SHOW, (b) => bubbles.show(b));
-void ipc.on<BubbleDismiss>(EVT_BUBBLE_DISMISS, (b) => bubbles.dismiss(b.id));
-void ipc.on<BuddyChanged>(EVT_BUDDY_CHANGED, (b) => {
+function applyBuddy(id: string): void {
   // rimontare la creatura costa (dispose + ricostruzione): solo su cambio vero
-  if (b.creature_id !== creature) {
-    creature = b.creature_id;
+  if (id !== creature) {
+    creature = id;
     scene.mountBuddy(creature);
   }
-});
-void ipc.on<ModeChanged>(EVT_MODE_CHANGED, (m) => applyMode(m.mode));
+}
 
 // clic sulla creatura (o sulla pillola) → pannello (§ 5.1)
 stage.addEventListener("click", () => void ipc.openPanel());
 soberEl.addEventListener("click", () => void ipc.openPanel());
 
-// pronta: il core risponde ri-emettendo stato corrente, buddy e modalità
-void ipc.surfaceReady("overlay");
+async function init(): Promise<void> {
+  // prima i listener, POI il ready: gli eventi emessi dal core in risposta
+  // non devono cadere nel vuoto di una registrazione ancora in corso
+  await Promise.all([
+    ipc.on<StateChanged>(EVT_STATE_CHANGED, applyState),
+    ipc.on<BubbleShow>(EVT_BUBBLE_SHOW, (b) => bubbles.show(b)),
+    ipc.on<BubbleDismiss>(EVT_BUBBLE_DISMISS, (b) => bubbles.dismiss(b.id)),
+    ipc.on<BuddyChanged>(EVT_BUDDY_CHANGED, (b) => applyBuddy(b.creature_id)),
+    ipc.on<ModeChanged>(EVT_MODE_CHANGED, (m) => applyMode(m.mode)),
+  ]);
+
+  // e comunque lo stato iniziale arriva come risposta diretta, non a eventi
+  const boot = await ipc.surfaceReady("overlay");
+  if (boot) {
+    applyBuddy(boot.creature_id);
+    applyMode(boot.mode);
+    if (boot.state) applyState(boot.state);
+    if (boot.bubble) bubbles.show(boot.bubble);
+  }
+}
+
+void init().catch(() => {
+  /* la rete di sicurezza qui sotto monta comunque qualcosa */
+});
+
+// rete di sicurezza: qualunque cosa sia andata storta nel boot, dopo un
+// secondo e mezzo sullo schermo c'è una creatura, non il vuoto
+window.setTimeout(() => {
+  if (!creature) applyBuddy("cotone");
+}, 1500);

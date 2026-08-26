@@ -1,14 +1,22 @@
 //! I comandi invocabili dalle superfici: le azioni dell'utente, l'unico
 //! flusso che risale dal renderer al core (§ 12).
+//!
+//! Ogni comando che può creare o distruggere una finestra è `async`: un
+//! comando sincrono viene eseguito dentro la callback IPC della webview
+//! chiamante, e su Windows creare una WebView2 da lì non completa mai
+//! l'inizializzazione (finestra bianca, poi stallo). Da `async` il comando
+//! gira sul thread pool e la creazione arriva all'event loop pulita.
+//! Il tray e le scorciatoie girano già sull'event loop: usano gli helper
+//! sincroni `do_*`.
 
 use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use win_buddy_core::events::{HitBox, EVT_NOTES_CHANGED};
+use win_buddy_core::events::{BubbleShow, HitBox, StateChanged, EVT_NOTES_CHANGED};
 use win_buddy_core::model::{Note, NoteState, PomodoroSession, SessionKind};
-use win_buddy_core::pomodoro::{self, PomodoroConfig};
 use win_buddy_core::parse;
+use win_buddy_core::pomodoro::{self, PomodoroConfig};
 
 use crate::presenter;
 use crate::runtime;
@@ -23,8 +31,10 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-fn touch(state: &State<AppState>) {
-    state.last_interaction.store(now_ms(), Ordering::Relaxed);
+fn touch(app: &AppHandle) {
+    app.state::<AppState>()
+        .last_interaction
+        .store(now_ms(), Ordering::Relaxed);
 }
 
 fn notes_changed(app: &AppHandle) {
@@ -71,6 +81,26 @@ pub struct DndStatusDto {
     queued: usize,
 }
 
+/// Lo stato iniziale dell'overlay, restituito da `surface_ready`: la
+/// superficie lo *chiede* invece di sperare che gli eventi arrivino dopo
+/// la registrazione dei listener. Niente race, niente creatura mancante.
+#[derive(Serialize)]
+pub struct OverlayBoot {
+    creature_id: String,
+    mode: String,
+    state: Option<StateChanged>,
+    bubble: Option<BubbleShow>,
+}
+
+#[derive(Serialize)]
+pub struct MonitorInfo {
+    index: usize,
+    name: String,
+    width: u32,
+    height: u32,
+    primary: bool,
+}
+
 fn pomodoro_status_dto(app: &AppHandle) -> CmdResult<PomodoroStatusDto> {
     let state = app.state::<AppState>();
     let store = state.store.lock().unwrap();
@@ -113,22 +143,22 @@ pub fn capture_preview(text: String) -> CapturePreviewDto {
 }
 
 #[tauri::command]
-pub fn capture_submit(
+pub async fn capture_submit(
     app: AppHandle,
-    state: State<AppState>,
     text: String,
     due_at_ms: Option<i64>,
 ) -> CmdResult<NoteView> {
-    touch(&state);
+    touch(&app);
     let now_local = local_naive_now();
     let p = parse::parse_capture(&text, now_local);
     // il selettore esplicito vince sul pattern nel testo
-    let (body, due) = match due_at_ms {
-        Some(ms) => (p.body, Some(ms)),
-        None => (p.body, p.due_local.map(local_to_epoch_ms)),
+    let due = match due_at_ms {
+        Some(ms) => Some(ms),
+        None => p.due_local.map(local_to_epoch_ms),
     };
-    let body = if body.is_empty() { text.trim().to_string() } else { body };
+    let body = if p.body.is_empty() { text.trim().to_string() } else { p.body };
     let note = {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         store.insert_note(&body, due, p.urgent, now_ms()).map_err(err)?
     };
@@ -140,8 +170,9 @@ pub fn capture_submit(
 }
 
 #[tauri::command]
-pub fn capture_cancel(app: AppHandle) {
+pub async fn capture_cancel(app: AppHandle) -> CmdResult<()> {
     surfaces::close_capture(&app);
+    Ok(())
 }
 
 // -------------------------------------------------------------------- note
@@ -172,7 +203,11 @@ pub fn notes_archive(state: State<AppState>, limit: Option<i64>) -> CmdResult<Ve
 }
 
 #[tauri::command]
-pub fn notes_search(state: State<AppState>, query: String, limit: Option<i64>) -> CmdResult<Vec<NoteView>> {
+pub fn notes_search(
+    state: State<AppState>,
+    query: String,
+    limit: Option<i64>,
+) -> CmdResult<Vec<NoteView>> {
     let store = state.store.lock().unwrap();
     Ok(store
         .search_notes(&query, limit.unwrap_or(100))
@@ -183,9 +218,10 @@ pub fn notes_search(state: State<AppState>, query: String, limit: Option<i64>) -
 }
 
 #[tauri::command]
-pub fn note_complete(app: AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    touch(&state);
+pub async fn note_complete(app: AppHandle, id: i64) -> CmdResult<()> {
+    touch(&app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         store.complete_note(id, now_ms()).map_err(err)?;
     }
@@ -195,9 +231,10 @@ pub fn note_complete(app: AppHandle, state: State<AppState>, id: i64) -> CmdResu
 }
 
 #[tauri::command]
-pub fn note_dismiss(app: AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    touch(&state);
+pub async fn note_dismiss(app: AppHandle, id: i64) -> CmdResult<()> {
+    touch(&app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         store.dismiss_note(id, now_ms()).map_err(err)?;
     }
@@ -207,9 +244,10 @@ pub fn note_dismiss(app: AppHandle, state: State<AppState>, id: i64) -> CmdResul
 }
 
 #[tauri::command]
-pub fn note_snooze(app: AppHandle, state: State<AppState>, id: i64, minutes: i64) -> CmdResult<()> {
-    touch(&state);
+pub async fn note_snooze(app: AppHandle, id: i64, minutes: i64) -> CmdResult<()> {
+    touch(&app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         store
             .snooze_note(id, now_ms() + minutes.max(1) * 60_000)
@@ -222,33 +260,46 @@ pub fn note_snooze(app: AppHandle, state: State<AppState>, id: i64, minutes: i64
 
 // ---------------------------------------------------------------- pomodoro
 
-#[tauri::command]
-pub fn pomodoro_start(
-    app: AppHandle,
-    state: State<AppState>,
+pub fn do_pomodoro_start(
+    app: &AppHandle,
     kind: SessionKind,
-    label: Option<String>,
+    label: Option<&str>,
 ) -> CmdResult<PomodoroStatusDto> {
-    touch(&state);
+    touch(app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        pomodoro::start(&store, kind, label.as_deref(), now_ms(), &cfg).map_err(err)?;
+        pomodoro::start(&store, kind, label, now_ms(), &cfg).map_err(err)?;
     }
-    *state.break_prompt.lock().unwrap() = None;
-    presenter::sync(&app);
-    pomodoro_status_dto(&app)
+    *app.state::<AppState>().break_prompt.lock().unwrap() = None;
+    presenter::sync(app);
+    pomodoro_status_dto(app)
 }
 
-#[tauri::command]
-pub fn pomodoro_abort(app: AppHandle, state: State<AppState>) -> CmdResult<PomodoroStatusDto> {
-    touch(&state);
+pub fn do_pomodoro_abort(app: &AppHandle) -> CmdResult<PomodoroStatusDto> {
+    touch(app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         pomodoro::abort(&store, now_ms()).map_err(err)?;
     }
-    presenter::sync(&app);
-    pomodoro_status_dto(&app)
+    presenter::sync(app);
+    pomodoro_status_dto(app)
+}
+
+#[tauri::command]
+pub async fn pomodoro_start(
+    app: AppHandle,
+    kind: SessionKind,
+    label: Option<String>,
+) -> CmdResult<PomodoroStatusDto> {
+    do_pomodoro_start(&app, kind, label.as_deref())
+}
+
+#[tauri::command]
+pub async fn pomodoro_abort(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
+    do_pomodoro_abort(&app)
 }
 
 #[tauri::command]
@@ -257,16 +308,20 @@ pub fn pomodoro_status(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
 }
 
 #[tauri::command]
-pub fn pomodoro_history(state: State<AppState>, limit: Option<i64>) -> CmdResult<Vec<PomodoroSession>> {
+pub fn pomodoro_history(
+    state: State<AppState>,
+    limit: Option<i64>,
+) -> CmdResult<Vec<PomodoroSession>> {
     let store = state.store.lock().unwrap();
     store.session_history(limit.unwrap_or(50)).map_err(err)
 }
 
 #[tauri::command]
-pub fn break_accept(app: AppHandle, state: State<AppState>) -> CmdResult<PomodoroStatusDto> {
-    touch(&state);
-    let kind = state.break_prompt.lock().unwrap().take();
+pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
+    touch(&app);
+    let kind = app.state::<AppState>().break_prompt.lock().unwrap().take();
     if let Some(kind) = kind {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
         pomodoro::start(&store, kind, None, now_ms(), &cfg).map_err(err)?;
@@ -276,9 +331,9 @@ pub fn break_accept(app: AppHandle, state: State<AppState>) -> CmdResult<Pomodor
 }
 
 #[tauri::command]
-pub fn break_skip(app: AppHandle, state: State<AppState>) -> CmdResult<PomodoroStatusDto> {
-    touch(&state);
-    *state.break_prompt.lock().unwrap() = None;
+pub async fn break_skip(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
+    touch(&app);
+    *app.state::<AppState>().break_prompt.lock().unwrap() = None;
     presenter::sync(&app);
     pomodoro_status_dto(&app)
 }
@@ -291,20 +346,28 @@ pub fn settings_all(state: State<AppState>) -> CmdResult<std::collections::HashM
     Ok(store.all_settings().map_err(err)?.into_iter().collect())
 }
 
-#[tauri::command]
-pub fn setting_set(app: AppHandle, state: State<AppState>, key: String, value: String) -> CmdResult<()> {
-    touch(&state);
+pub fn do_setting_set(app: &AppHandle, key: &str, value: &str) -> CmdResult<()> {
+    touch(app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        store.set_setting(&key, &value).map_err(err)?;
+        store.set_setting(key, value).map_err(err)?;
     }
-    match key.as_str() {
-        "buddy.corner" => surfaces::reposition_overlay(&app),
+    match key {
+        "buddy.corner" | "overlay.scale" | "overlay.monitor" => {
+            surfaces::apply_overlay_layout(app);
+        }
         _ => {}
     }
     // creatura, modalità, DND, durate: la sync riallinea tutto
-    presenter::sync(&app);
+    presenter::sync(app);
+    crate::tray::rebuild_menu_state(app);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn setting_set(app: AppHandle, key: String, value: String) -> CmdResult<()> {
+    do_setting_set(&app, &key, &value)
 }
 
 #[tauri::command]
@@ -312,54 +375,24 @@ pub fn dnd_status(app: AppHandle) -> CmdResult<DndStatusDto> {
     dnd_status_dto(&app)
 }
 
-#[tauri::command]
-pub fn dnd_set_manual(app: AppHandle, state: State<AppState>, hidden: bool) -> CmdResult<DndStatusDto> {
-    touch(&state);
+pub fn do_dnd_set_manual(app: &AppHandle, hidden: bool) -> CmdResult<DndStatusDto> {
+    touch(app);
     {
+        let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         store
             .set_setting("dnd.manual", if hidden { "1" } else { "0" })
             .map_err(err)?;
     }
     // all'uscita dal DND la sync applica il recupero della pila (§ 10.3)
-    presenter::sync(&app);
-    crate::tray::rebuild_menu_state(&app);
-    dnd_status_dto(&app)
-}
-
-// ----------------------------------------------------------------- overlay
-
-#[tauri::command]
-pub fn hittest_update(state: State<AppState>, x: f64, y: f64, w: f64, h: f64) {
-    *state.hitbox.lock().unwrap() = Some(HitBox { x, y, w, h });
+    presenter::sync(app);
+    crate::tray::rebuild_menu_state(app);
+    dnd_status_dto(app)
 }
 
 #[tauri::command]
-pub fn surface_ready(app: AppHandle, state: State<AppState>, surface: String) {
-    if surface == "overlay" {
-        // replay dello stato corrente sulla webview appena nata (§ 10.5)
-        let bubble = state.bubble.lock().unwrap().clone();
-        let last_state = state.last_state.lock().unwrap().clone();
-        drop(state);
-        presenter::sync(&app);
-        if let Some(b) = bubble {
-            let _ = app.emit(win_buddy_core::events::EVT_BUBBLE_SHOW, &b);
-        }
-        if let Some(s) = last_state {
-            let _ = app.emit(win_buddy_core::events::EVT_STATE_CHANGED, &s);
-        }
-    }
-}
-
-#[tauri::command]
-pub fn open_panel(app: AppHandle, state: State<AppState>) {
-    touch(&state);
-    surfaces::open_panel(&app);
-}
-
-#[tauri::command]
-pub fn close_panel(app: AppHandle) {
-    surfaces::close_panel(&app);
+pub async fn dnd_set_manual(app: AppHandle, hidden: bool) -> CmdResult<DndStatusDto> {
+    do_dnd_set_manual(&app, hidden)
 }
 
 /// DND manuale via scorciatoia o tray: alterna nascosto/normale.
@@ -369,6 +402,82 @@ pub fn toggle_dnd(app: &AppHandle) {
         let store = state.store.lock().unwrap();
         store.setting("dnd.manual").ok().flatten().as_deref() == Some("1")
     };
+    if let Err(e) = do_dnd_set_manual(app, !hidden) {
+        log::warn!("toggle DND fallito: {e}");
+    }
+}
+
+// ------------------------------------------------------------------ schermi
+
+#[tauri::command]
+pub fn monitors_list(app: AppHandle) -> CmdResult<Vec<MonitorInfo>> {
+    let primary_pos = app.primary_monitor().ok().flatten().map(|m| *m.position());
+    let monitors = app.available_monitors().map_err(err)?;
+    Ok(monitors
+        .iter()
+        .enumerate()
+        .map(|(index, m)| MonitorInfo {
+            index,
+            name: m
+                .name()
+                .map(|n| n.trim_start_matches("\\\\.\\").to_string())
+                .unwrap_or_else(|| format!("Schermo {}", index + 1)),
+            width: m.size().width,
+            height: m.size().height,
+            primary: primary_pos.map(|p| p == *m.position()).unwrap_or(index == 0),
+        })
+        .collect())
+}
+
+// ----------------------------------------------------------------- overlay
+
+#[tauri::command]
+pub fn hittest_update(state: State<AppState>, x: f64, y: f64, w: f64, h: f64) {
+    *state.hitbox.lock().unwrap() = Some(HitBox { x, y, w, h });
+}
+
+/// La superficie è pronta. Per l'overlay risponde con lo stato iniziale
+/// completo (§ 10.5): il replay a eventi non basta, perché la webview
+/// potrebbe non avere ancora registrato i listener quando gli eventi partono.
+#[tauri::command]
+pub async fn surface_ready(app: AppHandle, surface: String) -> CmdResult<Option<OverlayBoot>> {
+    if surface != "overlay" {
+        return Ok(None);
+    }
+    // riallinea le cache (bolla, stato) e il ciclo di vita
+    presenter::sync(&app);
+
     let state = app.state::<AppState>();
-    let _ = dnd_set_manual(app.clone(), state, !hidden);
+    let (creature_id, sober) = {
+        let store = state.store.lock().unwrap();
+        let creature = store
+            .setting("buddy.creature")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "cotone".into());
+        let sober = store.setting("buddy.mode").ok().flatten().as_deref() == Some("sober");
+        (creature, sober)
+    };
+    let force_sober = presenter::effective_dnd(&app).policy().force_sober;
+    let last_state = state.last_state.lock().unwrap().clone();
+    let bubble = state.bubble.lock().unwrap().clone();
+    Ok(Some(OverlayBoot {
+        creature_id,
+        mode: if sober || force_sober { "sober".into() } else { "full".into() },
+        state: last_state,
+        bubble,
+    }))
+}
+
+#[tauri::command]
+pub async fn open_panel(app: AppHandle) -> CmdResult<()> {
+    touch(&app);
+    surfaces::open_panel(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_panel(app: AppHandle) -> CmdResult<()> {
+    surfaces::close_panel(&app);
+    Ok(())
 }

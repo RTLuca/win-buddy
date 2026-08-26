@@ -78,17 +78,15 @@ fn on_menu(app: &AppHandle, id: &str) {
         "panel" => surfaces::open_panel(app),
         "capture" => surfaces::open_capture(app),
         "focus" => {
-            let state = app.state::<AppState>();
-            let _ = commands::pomodoro_start(app.clone(), state, SessionKind::Focus, None);
+            let _ = commands::do_pomodoro_start(app, SessionKind::Focus, None);
         }
         "abort" => {
-            let state = app.state::<AppState>();
-            let _ = commands::pomodoro_abort(app.clone(), state);
+            let _ = commands::do_pomodoro_abort(app);
         }
         "dnd" => commands::toggle_dnd(app),
         "sober" => {
-            let state = app.state::<AppState>();
             let next = {
+                let state = app.state::<AppState>();
                 let store = state.store.lock().unwrap();
                 if store.setting("buddy.mode").ok().flatten().as_deref() == Some("sober") {
                     "full"
@@ -96,7 +94,7 @@ fn on_menu(app: &AppHandle, id: &str) {
                     "sober"
                 }
             };
-            let _ = commands::setting_set(app.clone(), state, "buddy.mode".into(), next.into());
+            let _ = commands::do_setting_set(app, "buddy.mode", next);
         }
         "quit" => app.exit(0),
         _ => {}

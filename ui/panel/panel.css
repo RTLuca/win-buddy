@@ -382,3 +382,15 @@ button.ghost:hover {
   width: 16px;
   height: 16px;
 }
+
+.form input[type="range"] {
+  accent-color: var(--moss);
+  width: 140px;
+}
+
+.hint-val {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: 6px;
+}

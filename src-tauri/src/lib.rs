@@ -54,6 +54,7 @@ pub fn run() {
             commands::break_skip,
             commands::settings_all,
             commands::setting_set,
+            commands::monitors_list,
             commands::dnd_status,
             commands::dnd_set_manual,
             commands::hittest_update,

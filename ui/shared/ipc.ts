@@ -8,7 +8,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CapturePreview,
   DndStatus,
+  MonitorInfo,
   NoteView,
+  OverlayBoot,
   PomodoroStatus,
   SessionKind,
 } from "./contracts";
@@ -61,9 +63,12 @@ export const dndSetManual = (hidden: boolean) => invoke<DndStatus>("dnd_set_manu
 export const hittestUpdate = (x: number, y: number, w: number, h: number) =>
   invoke<void>("hittest_update", { x, y, w, h });
 
-/** La superficie è pronta: il core risponde ri-emettendo lo stato corrente. */
+/** La superficie è pronta: per l'overlay il core risponde con lo stato iniziale. */
 export const surfaceReady = (surface: "overlay" | "panel" | "capture") =>
-  invoke<void>("surface_ready", { surface });
+  invoke<OverlayBoot | null>("surface_ready", { surface });
+
+/** Gli schermi disponibili, per le impostazioni. */
+export const monitorsList = () => invoke<MonitorInfo[]>("monitors_list");
 
 export const openPanel = () => invoke<void>("open_panel");
 export const closePanel = () => invoke<void>("close_panel");

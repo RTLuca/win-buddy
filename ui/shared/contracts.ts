@@ -164,6 +164,22 @@ export interface DndStatus {
   queued: number;
 }
 
+/** Stato iniziale dell'overlay, risposto da `surface_ready` (niente race). */
+export interface OverlayBoot {
+  creature_id: string;
+  mode: "full" | "sober";
+  state: StateChanged | null;
+  bubble: BubbleShow | null;
+}
+
+export interface MonitorInfo {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+
 export const KIND_LABEL: Record<SessionKind, string> = {
   focus: "Focus",
   short_break: "Pausa breve",

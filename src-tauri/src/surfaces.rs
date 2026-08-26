@@ -2,8 +2,8 @@
 //! nasce quando c'è qualcosa da mostrare, muore in DND o inattività.
 
 use tauri::{
-    AppHandle, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent,
+    AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 use crate::platform;
@@ -13,12 +13,63 @@ pub const OVERLAY: &str = "overlay";
 pub const PANEL: &str = "panel";
 pub const CAPTURE: &str = "capture";
 
-const OVERLAY_W: f64 = 330.0;
-const OVERLAY_H: f64 = 360.0;
+const OVERLAY_BASE_W: f64 = 330.0;
+const OVERLAY_BASE_H: f64 = 360.0;
 const MARGIN: f64 = 14.0;
 /// Spazio riservato alla barra applicazioni quando l'area di lavoro
 /// non è disponibile.
 const TASKBAR: f64 = 52.0;
+
+/// Dimensione dell'overlay: la base per la scala scelta dall'utente
+/// (`overlay.scale`, percentuale 50–200).
+fn overlay_size(app: &AppHandle) -> (f64, f64) {
+    let scale = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        store.setting_i64("overlay.scale", 100).clamp(50, 200) as f64 / 100.0
+    };
+    (OVERLAY_BASE_W * scale, OVERLAY_BASE_H * scale)
+}
+
+/// Il monitor scelto dall'utente (`overlay.monitor`: "primary" o un indice),
+/// come rettangolo logico (larghezza, altezza, origine x, origine y).
+fn monitor_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
+    let choice = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        store
+            .setting("overlay.monitor")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "primary".into())
+    };
+
+    let logical = |m: &tauri::Monitor| {
+        let s = m.scale_factor();
+        (
+            m.size().width as f64 / s,
+            m.size().height as f64 / s,
+            m.position().x as f64 / s,
+            m.position().y as f64 / s,
+        )
+    };
+
+    if let Ok(index) = choice.parse::<usize>() {
+        if let Ok(monitors) = app.available_monitors() {
+            if let Some(m) = monitors.get(index) {
+                return logical(m);
+            }
+            // lo schermo scelto non c'è più (docking, cavo staccato):
+            // si ripiega sul primario invece di finire fuori schermo
+            log::warn!("schermo {index} non trovato: uso il primario");
+        }
+    }
+    app.primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| logical(&m))
+        .unwrap_or((1920.0, 1080.0, 0.0, 0.0))
+}
 
 pub fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(OVERLAY)
@@ -30,11 +81,12 @@ pub fn ensure_overlay(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(w) = overlay(app) {
         return Some(w);
     }
+    let (ow, oh) = overlay_size(app);
     let (x, y) = overlay_position(app);
     let started = std::time::Instant::now();
     let built = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("overlay/index.html".into()))
         .title("win-buddy")
-        .inner_size(OVERLAY_W, OVERLAY_H)
+        .inner_size(ow, oh)
         .position(x, y)
         .transparent(true)
         .decorations(false)
@@ -78,8 +130,8 @@ pub fn destroy_overlay(app: &AppHandle) {
     }
 }
 
-/// Angolo scelto dall'utente (§ 10.1), in coordinate logiche del monitor
-/// primario. L'area di lavoro tiene fuori la barra applicazioni.
+/// Angolo scelto dall'utente (§ 10.1), in coordinate logiche dello schermo
+/// scelto. L'area di lavoro tiene fuori la barra applicazioni.
 fn overlay_position(app: &AppHandle) -> (f64, f64) {
     let corner = {
         let state = app.state::<AppState>();
@@ -91,25 +143,13 @@ fn overlay_position(app: &AppHandle) -> (f64, f64) {
             .unwrap_or_else(|| "bottom-right".into())
     };
 
-    let (mw, mh, ox, oy) = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| {
-            let s = m.scale_factor();
-            (
-                m.size().width as f64 / s,
-                m.size().height as f64 / s,
-                m.position().x as f64 / s,
-                m.position().y as f64 / s,
-            )
-        })
-        .unwrap_or((1920.0, 1080.0, 0.0, 0.0));
+    let (ow, oh) = overlay_size(app);
+    let (mw, mh, ox, oy) = monitor_rect(app);
 
     let left = ox + MARGIN;
-    let right = ox + mw - OVERLAY_W - MARGIN;
+    let right = ox + mw - ow - MARGIN;
     let top = oy + MARGIN;
-    let bottom = oy + mh - OVERLAY_H - TASKBAR;
+    let bottom = oy + mh - oh - TASKBAR;
 
     match corner.as_str() {
         "bottom-left" => (left, bottom),
@@ -119,8 +159,12 @@ fn overlay_position(app: &AppHandle) -> (f64, f64) {
     }
 }
 
-pub fn reposition_overlay(app: &AppHandle) {
+/// Applica a caldo dimensione, schermo e angolo: chiamata quando cambiano
+/// `overlay.scale`, `overlay.monitor` o `buddy.corner`.
+pub fn apply_overlay_layout(app: &AppHandle) {
     if let Some(w) = overlay(app) {
+        let (ow, oh) = overlay_size(app);
+        let _ = w.set_size(LogicalSize::new(ow, oh));
         let (x, y) = overlay_position(app);
         let _ = w.set_position(LogicalPosition::new(x, y));
     }

@@ -227,6 +227,9 @@ document.getElementById("pomoAbort")!.addEventListener("click", async () => {
 
 const creaturesBox = document.getElementById("creatures")!;
 const setSober = document.getElementById("setSober") as HTMLInputElement;
+const setScale = document.getElementById("setScale") as HTMLInputElement;
+const scaleVal = document.getElementById("scaleVal") as HTMLSpanElement;
+const setMonitor = document.getElementById("setMonitor") as HTMLSelectElement;
 const setCorner = document.getElementById("setCorner") as HTMLSelectElement;
 const setAutoDnd = document.getElementById("setAutoDnd") as HTMLInputElement;
 const setIdleSleep = document.getElementById("setIdleSleep") as HTMLInputElement;
@@ -263,6 +266,8 @@ async function renderSettings(): Promise<void> {
   const s = await ipc.settingsAll();
   renderCreatures(s["buddy.creature"] ?? "cotone");
   setSober.checked = s["buddy.mode"] === "sober";
+  setScale.value = s["overlay.scale"] ?? "100";
+  scaleVal.textContent = `${setScale.value}%`;
   setCorner.value = s["buddy.corner"] ?? "bottom-right";
   setAutoDnd.checked = s["dnd.auto_fullscreen"] !== "0";
   setIdleSleep.value = s["overlay.idle_sleep_min"] ?? "20";
@@ -270,6 +275,26 @@ async function renderSettings(): Promise<void> {
   setShort.value = s["pomodoro.short_min"] ?? "5";
   setLong.value = s["pomodoro.long_min"] ?? "20";
   setEvery.value = s["pomodoro.long_every"] ?? "4";
+
+  // schermi disponibili: «principale» più gli altri per indice
+  try {
+    const monitors = await ipc.monitorsList();
+    setMonitor.replaceChildren();
+    const def = document.createElement("option");
+    def.value = "primary";
+    def.textContent = "principale";
+    setMonitor.append(def);
+    for (const m of monitors) {
+      const o = document.createElement("option");
+      o.value = String(m.index);
+      o.textContent = `${m.name} · ${m.width}×${m.height}${m.primary ? " (principale)" : ""}`;
+      setMonitor.append(o);
+    }
+    setMonitor.value = s["overlay.monitor"] ?? "primary";
+    if (setMonitor.selectedIndex < 0) setMonitor.value = "primary";
+  } catch {
+    setMonitor.replaceChildren();
+  }
 }
 
 function bindSetting(el: HTMLInputElement | HTMLSelectElement, key: string): void {
@@ -290,6 +315,13 @@ function bindSetting(el: HTMLInputElement | HTMLSelectElement, key: string): voi
 
 bindSetting(setSober, "buddy.mode");
 bindSetting(setCorner, "buddy.corner");
+bindSetting(setMonitor, "overlay.monitor");
+setScale.addEventListener("input", () => {
+  scaleVal.textContent = `${setScale.value}%`;
+});
+setScale.addEventListener("change", () => {
+  void ipc.settingSet("overlay.scale", setScale.value);
+});
 bindSetting(setAutoDnd, "dnd.auto_fullscreen");
 bindSetting(setIdleSleep, "overlay.idle_sleep_min");
 bindSetting(setFocus, "pomodoro.focus_min");
