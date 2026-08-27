@@ -1,0 +1,123 @@
+/* Banco di prova: pagina di sviluppo, non entra nel bundle dell'app.
+   Serve a guardare una creatura da vicino e a passare fra i sei stati
+   senza far girare il core. */
+
+body {
+  height: 100vh;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--night-2);
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+}
+
+/* la finestra vera dell'overlay: 330x360 logici (`surfaces.rs`), per vedere
+   quanto della creatura ci sta davvero dentro */
+#stage.window {
+  inset: auto;
+  top: 50%;
+  left: calc(50% + 118px);
+  transform: translate(-50%, -50%);
+  width: 330px;
+  height: 360px;
+  outline: 1px dashed rgba(255, 255, 255, 0.3);
+  outline-offset: 6px;
+}
+
+#stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#side {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 236px;
+  padding: 16px 16px 20px;
+  overflow-y: auto;
+  background: rgba(23, 20, 38, 0.82);
+  backdrop-filter: blur(14px);
+  border-right: 1px solid var(--line);
+  font-size: 13px;
+}
+
+h1 {
+  margin: 0 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+section {
+  margin-bottom: 18px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chips button {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.chips button:hover {
+  border-color: rgba(255, 255, 255, 0.26);
+}
+
+.chips button.on {
+  background: var(--lavender);
+  border-color: var(--lavender);
+  color: var(--night-2);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  cursor: pointer;
+}
+
+.hint,
+.stat {
+  margin: 18px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.stat {
+  font-family: var(--mono);
+  white-space: pre;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}

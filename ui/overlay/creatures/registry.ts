@@ -1,9 +1,12 @@
 /**
- * Il bestiario: sei creature intercambiabili (§ 9). Tutte fluttuano e
- * nessuna ha le gambe: niente walk cycle, niente contatto col terreno.
+ * Il bestiario (§ 9). Sei creature procedurali — tutte fluttuano, nessuna ha
+ * le gambe: niente walk cycle, niente contatto col terreno — più gli ospiti
+ * importati, che le gambe ce l'hanno e stanno in piedi sulla pedana.
  *
  * Questo registro è l'unico punto che cambia quando se ne aggiunge una:
- * nessuno switch sparso nel resto dell'applicazione.
+ * nessuno switch sparso nel resto dell'applicazione. Le due famiglie stanno
+ * dietro allo stesso contratto a quattro metodi, quindi `scene.ts` non sa
+ * nemmeno quale delle due sta montando.
  */
 
 import {
@@ -22,6 +25,8 @@ import {
 import { CREATURE_META, type Buddy, type BuddyMeta } from "../../shared/contracts";
 import { ProceduralBuddy, type Builder, type Parts } from "./base";
 import { INK, type Palette } from "./helpers";
+import { ROBERTO } from "./roberto";
+import { SkinnedBuddy, type SkinnedSpec } from "./skinned";
 
 interface Entry {
   palette: Palette;
@@ -366,17 +371,24 @@ const BUILDERS: Record<string, Entry> = {
   ottone: { palette: { body: 0xc9a227, accent: 0x8c6d1f, glow: 0x9bd4f5 }, build: buildOttone },
 };
 
+/** Gli ospiti importati: un GLB scolpito fuori e animato per pose (§ 9.2). */
+const SKINNED: Record<string, SkinnedSpec> = {
+  roberto: ROBERTO,
+};
+
 export function listBuddies(): BuddyMeta[] {
   return CREATURE_META;
 }
 
 export function hasBuddy(id: string): boolean {
-  return id in BUILDERS;
+  return id in BUILDERS || id in SKINNED;
 }
 
 export function createBuddy(id: string): Buddy {
-  const safe = id in BUILDERS ? id : "cotone";
+  const safe = hasBuddy(id) ? id : "cotone";
   const meta = CREATURE_META.find((m) => m.id === safe)!;
+  const skin = SKINNED[safe];
+  if (skin) return new SkinnedBuddy(meta, skin);
   const entry = BUILDERS[safe];
   return new ProceduralBuddy(meta, entry.palette, entry.build);
 }

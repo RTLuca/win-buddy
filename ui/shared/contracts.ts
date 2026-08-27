@@ -40,6 +40,7 @@ export const CREATURE_META: BuddyMeta[] = [
   { id: "quarzo", name: "Quarzo", species: "golem di cristallo", trait: "un occhio solo" },
   { id: "brace", name: "Brace", species: "draghetto sputafuoco", trait: "faccettato low-poly" },
   { id: "ottone", name: "Ottone", species: "automa da tavolo", trait: "visore programmabile" },
+  { id: "roberto", name: "Roberto", species: "ospite importato", trait: "sta in piedi, ha le mani" },
 ];
 
 /** Contratto delle creature (§ 9.1): quattro metodi e nient'altro. */

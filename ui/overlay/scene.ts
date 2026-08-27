@@ -153,9 +153,15 @@ export class OverlayScene {
    * del click-through (§ 10.2): più è stretto, meno l'overlay ruba clic.
    */
   private creatureRect(): ScreenRect | null {
-    const root = (this.buddy as ProceduralBuddy | null)?.getRoot?.();
+    const buddy = this.buddy as
+      | (ProceduralBuddy & { getBox?: (t: Box3) => Box3 | null })
+      | null;
+    const root = buddy?.getRoot?.();
     if (!root) return null;
-    this.box.setFromObject(root);
+    // Le creature skinnate sanno dare la sagoma vera: per loro la bounding
+    // box della geometria e' ancora la T-pose e dichiarerebbe un ingombro
+    // molto piu' largo del dovuto. Le procedurali non ne hanno bisogno.
+    if (!buddy?.getBox?.(this.box)) this.box.setFromObject(root);
     if (this.box.isEmpty()) return null;
 
     const rect = this.host.getBoundingClientRect();

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>win-buddy · banco di prova delle creature</title>
+    <link rel="stylesheet" href="../shared/theme.css" />
+    <link rel="stylesheet" href="./preview.css" />
+  </head>
+  <body>
+    <div id="stage"></div>
+
+    <aside id="side">
+      <h1>banco di prova</h1>
+
+      <section>
+        <h2>creatura</h2>
+        <div id="creatures" class="chips"></div>
+      </section>
+
+      <section>
+        <h2>stato</h2>
+        <div id="states" class="chips"></div>
+      </section>
+
+      <section>
+        <h2>gesti</h2>
+        <div id="gestures" class="chips"></div>
+      </section>
+
+      <section>
+        <h2>sfondo</h2>
+        <div id="grounds" class="chips"></div>
+      </section>
+
+      <section>
+        <h2>vista</h2>
+        <div class="chips">
+          <button type="button" data-view="overlay">come nell'overlay</button>
+          <button type="button" data-view="front">di fronte</button>
+          <button type="button" data-view="side">di profilo</button>
+        </div>
+        <label class="row">
+          <input type="checkbox" id="winbox" />
+          <span>finestra overlay 330&times;360</span>
+        </label>
+        <label class="row">
+          <input type="checkbox" id="skel" />
+          <span>scheletro</span>
+        </label>
+        <label class="row">
+          <input type="checkbox" id="spin" />
+          <span>giradischi</span>
+        </label>
+      </section>
+
+      <p class="hint">
+        Trascina per orbitare, rotella per avvicinare. La camera «come
+        nell'overlay» è la stessa di <code>scene.ts</code>: fov 36, z 6,6.
+      </p>
+      <p id="stat" class="stat"></p>
+    </aside>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
