@@ -11,6 +11,7 @@ import {
   EVT_BUBBLE_SHOW,
   EVT_BUDDY_CHANGED,
   EVT_MODE_CHANGED,
+  EVT_POMODORO_PRESENTATION,
   EVT_STATE_CHANGED,
   STATE_COLOR,
   fmtCountdown,
@@ -18,10 +19,16 @@ import {
   type BubbleShow,
   type BuddyChanged,
   type ModeChanged,
+  type PomodoroPresentation,
   type StateChanged,
 } from "../shared/contracts";
 import * as ipc from "../shared/ipc";
 import { BubbleLayer, stateLabel } from "./bubbles";
+import {
+  connectPomodoroPresentationSource,
+  createPomodoroPresentationConsumer,
+  pomodoroPresentationBubble,
+} from "./pomodoro-presentations";
 import { normalizeScale } from "./scale";
 import { OverlayScene, type ScreenRect } from "./scene";
 
@@ -40,6 +47,11 @@ const quickScaleVal = document.getElementById("quickScaleVal") as HTMLOutputElem
 
 const scene = new OverlayScene(stage);
 const bubbles = new BubbleLayer(document.body);
+const consumePomodoroPresentation = createPomodoroPresentationConsumer({
+  render: (event) => bubbles.show(pomodoroPresentationBubble(event)),
+  acknowledge: (id) => ipc.pomodoroPresentationAck(id),
+  reportError: (error) => console.error("presentazione Pomodoro non confermata", error),
+});
 
 let mode: "full" | "sober" = "full";
 let creature = "";
@@ -336,22 +348,27 @@ soberEl.addEventListener("click", () => void ipc.openPanel());
 async function init(): Promise<void> {
   // prima i listener, POI il ready: gli eventi emessi dal core in risposta
   // non devono cadere nel vuoto di una registrazione ancora in corso
-  await Promise.all([
-    ipc.on<StateChanged>(EVT_STATE_CHANGED, applyState),
-    ipc.on<BubbleShow>(EVT_BUBBLE_SHOW, (b) => bubbles.show(b)),
-    ipc.on<BubbleDismiss>(EVT_BUBBLE_DISMISS, (b) => bubbles.dismiss(b.id)),
-    ipc.on<BuddyChanged>(EVT_BUDDY_CHANGED, (b) => applyBuddy(b.creature_id)),
-    ipc.on<ModeChanged>(EVT_MODE_CHANGED, (m) => applyMode(m.mode)),
-  ]);
-
-  // e comunque lo stato iniziale arriva come risposta diretta, non a eventi
-  const boot = await ipc.surfaceReady("overlay");
-  if (boot) {
-    applyBuddy(boot.creature_id);
-    applyMode(boot.mode);
-    if (boot.state) applyState(boot.state);
-    if (boot.bubble) bubbles.show(boot.bubble);
-  }
+  await connectPomodoroPresentationSource({
+    subscribe: (deliver) =>
+      Promise.all([
+        ipc.on<StateChanged>(EVT_STATE_CHANGED, applyState),
+        ipc.on<BubbleShow>(EVT_BUBBLE_SHOW, (b) => bubbles.show(b)),
+        ipc.on<BubbleDismiss>(EVT_BUBBLE_DISMISS, (b) => bubbles.dismiss(b.id)),
+        ipc.on<BuddyChanged>(EVT_BUDDY_CHANGED, (b) => applyBuddy(b.creature_id)),
+        ipc.on<ModeChanged>(EVT_MODE_CHANGED, (m) => applyMode(m.mode)),
+        ipc.on<PomodoroPresentation>(EVT_POMODORO_PRESENTATION, deliver),
+      ]),
+    replay: async () => {
+      const boot = await ipc.surfaceReady("overlay");
+      if (!boot) return [];
+      applyBuddy(boot.creature_id);
+      applyMode(boot.mode);
+      if (boot.state) applyState(boot.state);
+      if (boot.bubble) bubbles.show(boot.bubble);
+      return boot.presentations;
+    },
+    consume: consumePomodoroPresentation,
+  });
 }
 
 void init().catch(() => {

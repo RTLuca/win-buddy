@@ -417,7 +417,7 @@ pub fn resolve_open(
             )?;
             return Ok(Recovery::NeedsReview(session));
         }
-        let (session, _event) = store.finish_session_with_presentation_event(
+        let (_session, _event) = store.finish_session_with_presentation_event(
             current.id,
             current.transition_revision,
             SessionOutcome::Completed,
@@ -425,7 +425,7 @@ pub fn resolve_open(
             now,
             EventKind::ReturnPrompt,
         )?;
-        return Ok(Recovery::ReadyToClose(session));
+        return Ok(Recovery::Nothing);
     }
 
     if current.kind == SessionKind::Focus && current.phase == SessionPhase::ReadyToClose {
@@ -433,6 +433,16 @@ pub fn resolve_open(
     }
 
     if is_stale {
+        if current.kind.is_break() && current.phase == SessionPhase::Running {
+            let (session, _event) = store.set_phase_with_presentation_event(
+                current.id,
+                SessionPhase::ReadyToClose,
+                current.transition_revision,
+                now,
+                EventKind::RecoveryNeeded,
+            )?;
+            return Ok(Recovery::NeedsReview(session));
+        }
         let _event = store.enqueue_current_presentation_event(
             current.id,
             current.transition_revision,
@@ -893,6 +903,51 @@ mod tests {
             .all(|event| event.kind != EventKind::ReturnPrompt));
         assert_eq!(after_tick.phase, SessionPhase::ReadyToClose);
         assert_eq!(after_tick.outcome, None);
+    }
+
+    #[test]
+    fn stale_break_before_deadline_stays_reviewable_after_followup_tick() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, 25 * MIN, 0)
+            .unwrap()
+            .session;
+
+        let recovered = resolve_open(&s, 20 * MIN, 5 * MIN, 0, &PomodoroConfig::load(&s)).unwrap();
+        let after_recovery = s.get_session(break_session.id).unwrap().unwrap();
+        let tick_events = tick(&s, 25 * MIN).unwrap();
+        let after_tick = s.get_session(break_session.id).unwrap().unwrap();
+
+        assert!(matches!(recovered, Recovery::NeedsReview(_)));
+        assert_eq!(
+            s.pending_presentation_events().unwrap()[0].kind,
+            EventKind::RecoveryNeeded
+        );
+        assert_eq!(after_recovery.phase, SessionPhase::ReadyToClose);
+        assert_eq!(after_recovery.outcome, None);
+        assert!(tick_events.is_empty());
+        assert_eq!(after_tick.phase, SessionPhase::ReadyToClose);
+        assert_eq!(after_tick.outcome, None);
+    }
+
+    #[test]
+    fn recent_break_recovery_returns_nothing_after_closing_the_break() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, 5 * MIN, 0)
+            .unwrap()
+            .session;
+
+        let recovered =
+            resolve_open(&s, 6 * MIN, 6 * MIN - 1_000, 0, &PomodoroConfig::load(&s)).unwrap();
+
+        assert!(matches!(recovered, Recovery::Nothing));
+        assert_eq!(
+            s.get_session(break_session.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert_eq!(
+            s.pending_presentation_events().unwrap()[0].kind,
+            EventKind::ReturnPrompt
+        );
     }
 
     #[test]

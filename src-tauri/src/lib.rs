@@ -50,6 +50,7 @@ pub fn run() {
             commands::pomodoro_abort,
             commands::pomodoro_status,
             commands::pomodoro_history,
+            commands::pomodoro_presentation_ack,
             commands::break_accept,
             commands::break_skip,
             commands::settings_all,

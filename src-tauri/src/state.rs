@@ -1,6 +1,7 @@
 //! Stato del processo core. Il database è la verità; qui vive solo ciò che
 //! è effimero per costruzione (bolla mostrata, hitbox, orologi di servizio).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::Mutex;
@@ -23,6 +24,9 @@ pub struct AppState {
     pub bubble: Mutex<Option<BubbleShow>>,
     /// L'ultimo `state:changed` emesso, idem.
     pub last_state: Mutex<Option<StateChanged>>,
+    /// Toast Pomodoro già schedulati in questo processo. È soltanto una
+    /// barriera anti-duplicato: l'outbox resta pending fino all'ack della UI.
+    pub native_pomodoro_attempts: Mutex<HashSet<i64>>,
     /// Fine della finestra di festeggiamento dopo un focus chiuso.
     pub celebrating_until: AtomicI64,
     /// Ultima interazione dell'utente: decide sleep e spegnimento overlay.
@@ -50,6 +54,7 @@ impl AppState {
             armed_due: Mutex::new(None),
             bubble: Mutex::new(None),
             last_state: Mutex::new(None),
+            native_pomodoro_attempts: Mutex::new(HashSet::new()),
             celebrating_until: AtomicI64::new(0),
             last_interaction: AtomicI64::new(now),
             hitbox: Mutex::new(None),

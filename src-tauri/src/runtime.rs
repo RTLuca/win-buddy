@@ -9,7 +9,6 @@ use tauri::{AppHandle, Manager};
 use win_buddy_core::dnd::DndLevel;
 use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent};
 use win_buddy_core::scheduler::{self, RESUME_GAP_MS, TICK_MS};
-use win_buddy_core::Store;
 
 use crate::platform;
 use crate::presenter;
@@ -79,7 +78,9 @@ fn heartbeat(app: &AppHandle) {
     // persisti il battito: al prossimo avvio è il «last_alive» del recupero
     {
         let store = state.store.lock().unwrap();
-        let _ = store.set_setting("core.last_alive", &now.to_string());
+        if let Err(error) = store.set_setting("core.last_alive", &now.to_string()) {
+            log::warn!("persistenza heartbeat fallita: {error}");
+        }
     }
 
     if prev > 0 && now - prev > RESUME_GAP_MS {
@@ -102,8 +103,16 @@ pub fn do_tick(app: &AppHandle) {
     let (out, pomo_events) = {
         let store = state.store.lock().unwrap();
         let out = scheduler::tick(&store, now);
-        let _ = pomodoro::tick(&store, now);
-        let events = store.pending_presentation_events().unwrap_or_default();
+        if let Err(error) = pomodoro::tick(&store, now) {
+            log::error!("tick Pomodoro fallito: {error}");
+        }
+        let events = match store.pending_presentation_events() {
+            Ok(events) => events,
+            Err(error) => {
+                log::error!("lettura outbox Pomodoro fallita: {error}");
+                Vec::new()
+            }
+        };
         (
             out.unwrap_or_else(|_| scheduler::TickOutcome {
                 newly_fired: vec![],
@@ -134,12 +143,20 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
     let (out, pomo_events) = {
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        let _ = pomodoro::resolve_open(&store, now, last_alive, day_start_ms(), &cfg);
+        if let Err(error) = pomodoro::resolve_open(&store, now, last_alive, day_start_ms(), &cfg) {
+            log::error!("recupero Pomodoro fallito: {error}");
+        }
         let out = scheduler::tick(&store, now).unwrap_or_else(|_| scheduler::TickOutcome {
             newly_fired: vec![],
             arm_timer_ms: None,
         });
-        let events = store.pending_presentation_events().unwrap_or_default();
+        let events = match store.pending_presentation_events() {
+            Ok(events) => events,
+            Err(error) => {
+                log::error!("lettura outbox Pomodoro dopo recupero fallita: {error}");
+                Vec::new()
+            }
+        };
         (out, events)
     };
 
@@ -155,26 +172,16 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
 
 fn handle_pomodoro_events(app: &AppHandle, events: &[PomodoroEvent]) {
     for event in events {
-        let presentation = presenter::present_pomodoro_event(app, event);
-        let state = app.state::<AppState>();
-        let store = state.store.lock().unwrap();
-        let _ = acknowledge_after_presentation(&store, event.id, now_ms(), presentation);
+        if let Err(error) =
+            observe_presentation_attempt(presenter::present_pomodoro_event(app, event))
+        {
+            log::warn!("presentazione Pomodoro {} fallita: {error}", event.id);
+        }
     }
 }
 
-fn acknowledge_after_presentation(
-    store: &Store,
-    event_id: i64,
-    now: i64,
-    presentation: Result<bool, String>,
-) -> Result<bool, String> {
-    let presented = presentation?;
-    if presented {
-        store
-            .acknowledge_presentation_event(event_id, now)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(presented)
+fn observe_presentation_attempt(presentation: Result<bool, String>) -> Result<bool, String> {
+    presentation
 }
 
 /// Timer mirato (§ 7.2): armato solo per scadenze entro 60 s, mai per
@@ -268,12 +275,7 @@ mod tests {
     fn failed_presentation_leaves_the_event_pending() {
         let (store, event) = pending_event();
 
-        let result = acknowledge_after_presentation(
-            &store,
-            event.id,
-            MIN + 1,
-            Err("notification failed".into()),
-        );
+        let result = observe_presentation_attempt(Err("notification failed".into()));
 
         assert!(result.is_err());
         assert_eq!(store.pending_presentation_events().unwrap(), vec![event]);
@@ -283,21 +285,19 @@ mod tests {
     fn dnd_suppression_leaves_the_event_pending() {
         let (store, event) = pending_event();
 
-        let presented =
-            acknowledge_after_presentation(&store, event.id, MIN + 1, Ok(false)).unwrap();
+        let presented = observe_presentation_attempt(Ok(false)).unwrap();
 
         assert!(!presented);
         assert_eq!(store.pending_presentation_events().unwrap(), vec![event]);
     }
 
     #[test]
-    fn successful_presentation_acknowledges_the_event() {
+    fn scheduled_delivery_does_not_ack_without_consumer_confirmation() {
         let (store, event) = pending_event();
 
-        let presented =
-            acknowledge_after_presentation(&store, event.id, MIN + 1, Ok(true)).unwrap();
+        let presented = observe_presentation_attempt(Ok(true)).unwrap();
 
         assert!(presented);
-        assert!(store.pending_presentation_events().unwrap().is_empty());
+        assert_eq!(store.pending_presentation_events().unwrap(), vec![event]);
     }
 }

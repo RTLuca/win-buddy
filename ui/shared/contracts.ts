@@ -71,6 +71,7 @@ export const EVT_BUBBLE_DISMISS = "bubble:dismiss";
 export const EVT_BUDDY_CHANGED = "buddy:changed";
 export const EVT_MODE_CHANGED = "mode:changed";
 export const EVT_NOTES_CHANGED = "notes:changed";
+export const EVT_POMODORO_PRESENTATION = "pomodoro:presentation";
 
 export interface StateChanged {
   state: BuddyState;
@@ -136,6 +137,20 @@ export interface CapturePreview {
 
 export type SessionKind = "focus" | "short_break" | "long_break";
 export type SessionOutcome = "completed" | "aborted" | "invalidated";
+export type PomodoroEventKind =
+  | "prewarning"
+  | "ready_to_close"
+  | "return_prompt"
+  | "recovery_needed";
+
+/** Evento outbox arricchito soltanto con il tipo di sessione da presentare. */
+export interface PomodoroPresentation {
+  id: number;
+  session_id: number;
+  kind: PomodoroEventKind;
+  transition_revision: number;
+  session_kind: SessionKind;
+}
 
 export interface PomodoroSession {
   id: number;
@@ -171,6 +186,7 @@ export interface OverlayBoot {
   mode: "full" | "sober";
   state: StateChanged | null;
   bubble: BubbleShow | null;
+  presentations: PomodoroPresentation[];
 }
 
 export interface MonitorInfo {

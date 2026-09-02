@@ -142,8 +142,12 @@ export class BubbleLayer {
       acts.append(btn("Apri il pannello", "primary", () => ipc.openPanel()));
     } else if (b.kind === "break_prompt") {
       acts.append(
-        btn("Inizia pausa", "primary", () => ipc.breakAccept()),
-        btn("Salta", "", () => ipc.breakSkip()),
+        btn("Inizia pausa", "primary", () => {
+          void ipc.breakAccept().then(() => this.dismiss(b.id));
+        }),
+        btn("Salta", "", () => {
+          void ipc.breakSkip().then(() => this.dismiss(b.id));
+        }),
       );
     } else {
       acts.append(btn("Ok", "primary", () => this.dismiss(b.id)));

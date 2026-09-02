@@ -47,6 +47,8 @@ export const pomodoroAbort = () => invoke<PomodoroStatus>("pomodoro_abort");
 export const pomodoroStatus = () => invoke<PomodoroStatus>("pomodoro_status");
 export const pomodoroHistory = (limit = 50) =>
   invoke<import("./contracts").PomodoroSession[]>("pomodoro_history", { limit });
+export const pomodoroPresentationAck = (id: number) =>
+  invoke<void>("pomodoro_presentation_ack", { id });
 
 // ------------------------------------------------------- impostazioni/DND
 

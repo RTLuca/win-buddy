@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use win_buddy_core::events::{BubbleShow, HitBox, StateChanged, EVT_NOTES_CHANGED};
 use win_buddy_core::model::{
-    Note, NoteState, PomodoroSession, SessionKind, SessionOutcome, StartSession,
+    Note, NoteState, PomodoroSession, SessionKind, SessionOutcome, SessionPhase, StartSession,
 };
 use win_buddy_core::parse;
 use win_buddy_core::pomodoro::{self, PomodoroConfig};
@@ -92,6 +92,7 @@ pub struct OverlayBoot {
     mode: String,
     state: Option<StateChanged>,
     bubble: Option<BubbleShow>,
+    presentations: Vec<presenter::PomodoroPresentationDto>,
 }
 
 #[derive(Serialize)]
@@ -340,8 +341,58 @@ pub fn pomodoro_history(
 }
 
 #[tauri::command]
+pub fn pomodoro_presentation_ack(state: State<AppState>, id: i64) -> CmdResult<()> {
+    let store = state.store.lock().unwrap();
+    store
+        .acknowledge_presentation_event(id, now_ms())
+        .map_err(err)
+}
+
+#[derive(Clone, Copy)]
+enum LegacyBreakAction {
+    Accept,
+    Skip,
+}
+
+fn apply_legacy_break_action(
+    store: &win_buddy_core::Store,
+    action: LegacyBreakAction,
+    now: i64,
+    day_start: i64,
+) -> win_buddy_core::Result<()> {
+    let current = store
+        .open_session()?
+        .filter(|session| {
+            session.kind == SessionKind::Focus && session.phase == SessionPhase::ReadyToClose
+        })
+        .ok_or_else(|| {
+            win_buddy_core::CoreError::InvalidState("nessuna proposta di pausa attiva".into())
+        })?;
+    pomodoro::finish(
+        store,
+        current.id,
+        current.transition_revision,
+        SessionOutcome::Completed,
+        None,
+        now,
+    )?;
+    if matches!(action, LegacyBreakAction::Accept) {
+        let cfg = PomodoroConfig::load(store);
+        let kind = pomodoro::proposed_break(store, day_start, &cfg)?;
+        pomodoro::start_break(store, kind, cfg.duration_ms(kind), now)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
     touch(&app);
+    {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        apply_legacy_break_action(&store, LegacyBreakAction::Accept, now_ms(), day_start_ms())
+            .map_err(err)?;
+    }
     presenter::sync(&app);
     pomodoro_status_dto(&app)
 }
@@ -349,6 +400,12 @@ pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
 #[tauri::command]
 pub async fn break_skip(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
     touch(&app);
+    {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        apply_legacy_break_action(&store, LegacyBreakAction::Skip, now_ms(), day_start_ms())
+            .map_err(err)?;
+    }
     presenter::sync(&app);
     pomodoro_status_dto(&app)
 }
@@ -494,7 +551,8 @@ pub async fn surface_ready(app: AppHandle, surface: String) -> CmdResult<Option<
     presenter::sync(&app);
 
     let state = app.state::<AppState>();
-    let (creature_id, sober) = {
+    let allow_presentations = presenter::effective_dnd(&app).policy().notify_immediately;
+    let (creature_id, sober, presentations) = {
         let store = state.store.lock().unwrap();
         let creature = store
             .setting("buddy.creature")
@@ -502,7 +560,12 @@ pub async fn surface_ready(app: AppHandle, surface: String) -> CmdResult<Option<
             .flatten()
             .unwrap_or_else(|| "cotone".into());
         let sober = store.setting("buddy.mode").ok().flatten().as_deref() == Some("sober");
-        (creature, sober)
+        let presentations = if allow_presentations {
+            presenter::pomodoro_presentations(&store)?
+        } else {
+            Vec::new()
+        };
+        (creature, sober, presentations)
     };
     let force_sober = presenter::effective_dnd(&app).policy().force_sober;
     let last_state = state.last_state.lock().unwrap().clone();
@@ -512,6 +575,7 @@ pub async fn surface_ready(app: AppHandle, surface: String) -> CmdResult<Option<
         mode: if sober || force_sober { "sober".into() } else { "full".into() },
         state: last_state,
         bubble,
+        presentations,
     }))
 }
 
@@ -535,4 +599,65 @@ pub async fn open_capture(app: AppHandle) -> CmdResult<()> {
     touch(&app);
     surfaces::open_capture(&app);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use win_buddy_core::pomodoro::EventKind;
+    use win_buddy_core::Store;
+
+    const MIN: i64 = 60_000;
+
+    #[test]
+    fn overlay_boot_replays_pending_event_with_stable_identity() {
+        let store = Store::open_in_memory().unwrap();
+        pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0).unwrap();
+        let event = pomodoro::tick(&store, MIN).unwrap().remove(0);
+
+        let presentations = presenter::pomodoro_presentations(&store).unwrap();
+
+        assert_eq!(presentations.len(), 1);
+        assert_eq!(presentations[0].id, event.id);
+        assert_eq!(presentations[0].session_id, event.session_id);
+        assert_eq!(presentations[0].kind, EventKind::ReadyToClose);
+        assert_eq!(presentations[0].transition_revision, 1);
+        assert_eq!(presentations[0].session_kind, SessionKind::Focus);
+    }
+
+    #[test]
+    fn legacy_break_accept_completes_ready_focus_and_starts_proposed_break() {
+        let store = Store::open_in_memory().unwrap();
+        let focus = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap()
+            .session;
+        pomodoro::tick(&store, MIN).unwrap();
+
+        apply_legacy_break_action(&store, LegacyBreakAction::Accept, MIN, 0).unwrap();
+
+        assert_eq!(
+            store.get_session(focus.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        let active = store.open_session().unwrap().unwrap();
+        assert_eq!(active.kind, SessionKind::ShortBreak);
+        assert_eq!(active.phase, win_buddy_core::model::SessionPhase::Running);
+    }
+
+    #[test]
+    fn legacy_break_skip_completes_ready_focus_without_starting_break() {
+        let store = Store::open_in_memory().unwrap();
+        let focus = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap()
+            .session;
+        pomodoro::tick(&store, MIN).unwrap();
+
+        apply_legacy_break_action(&store, LegacyBreakAction::Skip, MIN, 0).unwrap();
+
+        assert_eq!(
+            store.get_session(focus.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert!(store.open_session().unwrap().is_none());
+    }
 }

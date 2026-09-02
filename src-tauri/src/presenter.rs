@@ -6,6 +6,7 @@
 
 use std::sync::atomic::Ordering;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use win_buddy_core::dnd::DndLevel;
@@ -25,6 +26,43 @@ use crate::tray;
 /// Dopo quanto la creatura si addormenta (metà del tempo di spegnimento).
 const SLEEP_FRACTION: i64 = 2;
 const EVT_POMODORO_PRESENTATION: &str = "pomodoro:presentation";
+
+#[derive(Clone, Serialize)]
+pub(crate) struct PomodoroPresentationDto {
+    pub(crate) id: i64,
+    pub(crate) session_id: i64,
+    pub(crate) kind: EventKind,
+    pub(crate) transition_revision: i64,
+    pub(crate) session_kind: SessionKind,
+}
+
+fn pomodoro_presentation(
+    store: &Store,
+    event: &PomodoroEvent,
+) -> Result<PomodoroPresentationDto, String> {
+    let session = store
+        .get_session(event.session_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("sessione outbox non trovata: {}", event.session_id))?;
+    Ok(PomodoroPresentationDto {
+        id: event.id,
+        session_id: event.session_id,
+        kind: event.kind,
+        transition_revision: event.transition_revision,
+        session_kind: session.kind,
+    })
+}
+
+pub(crate) fn pomodoro_presentations(
+    store: &Store,
+) -> Result<Vec<PomodoroPresentationDto>, String> {
+    store
+        .pending_presentation_events()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(|event| pomodoro_presentation(store, event))
+        .collect()
+}
 
 /// Il livello DND effettivo: il più severo tra manuale e automatico (§ 10.3).
 pub fn effective_dnd(app: &AppHandle) -> DndLevel {
@@ -60,12 +98,20 @@ pub fn sync(app: &AppHandle) {
     let policy = dnd.policy();
 
     // ------------------------------------------------ dati dal database
-    let (fired, focus_active, active, sober, idle_sleep_min, creature) = {
+    let (fired, focus_active, active, pending_pomodoro, sober, idle_sleep_min, creature) = {
         let store = state.store.lock().unwrap();
+        let pending_pomodoro = match store.pending_presentation_events() {
+            Ok(events) => !events.is_empty(),
+            Err(error) => {
+                log::error!("lettura outbox Pomodoro fallita durante sync: {error}");
+                false
+            }
+        };
         (
             store.fired_notes().unwrap_or_default(),
             pomodoro::focus_active(&store, now).unwrap_or(false),
             pomodoro::active_session(&store, now).unwrap_or(None),
+            pending_pomodoro,
             sober_mode(&store, dnd),
             store.setting_i64("overlay.idle_sleep_min", 20),
             store
@@ -80,7 +126,7 @@ pub fn sync(app: &AppHandle) {
 
     // ------------------------------------------------ ciclo di vita overlay
     let idle_ms = now - state.last_interaction.load(Ordering::Relaxed);
-    let has_content = active.is_some() || queued > 0 || celebrating;
+    let has_content = active.is_some() || pending_pomodoro || queued > 0 || celebrating;
     let overlay_wanted = policy.overlay_alive
         && (has_content || idle_ms < idle_sleep_min * 60_000);
 
@@ -209,28 +255,41 @@ pub fn toast(app: &AppHandle, title: &str, body: &str) {
         .show();
 }
 
-/// Presenta un evento dell'outbox usando il suo id come chiave stabile. Un
-/// `Ok(false)` indica una soppressione intenzionale (DND) e non va confermato.
+/// Consegna un evento dell'outbox mantenendo il suo id nel payload. La sola
+/// emissione (o schedulazione del toast) non conferma mai l'evento: l'ack
+/// appartiene al consumer overlay dopo il render.
 pub fn present_pomodoro_event(app: &AppHandle, event: &PomodoroEvent) -> Result<bool, String> {
     let policy = effective_dnd(app).policy();
     if !policy.notify_immediately {
         return Ok(false);
     }
 
-    app.emit(EVT_POMODORO_PRESENTATION, event)
+    let payload = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        pomodoro_presentation(&store, event)?
+    };
+    app.emit(EVT_POMODORO_PRESENTATION, &payload)
         .map_err(|error| error.to_string())?;
 
     if policy.toast_allowed && surfaces::overlay(app).is_none() {
-        let (title, body) = pomodoro_event_copy(app, event);
-        let notification_id = i32::try_from(event.id)
-            .map_err(|_| format!("id outbox non rappresentabile: {}", event.id))?;
-        app.notification()
-            .builder()
-            .id(notification_id)
-            .title(title)
-            .body(body)
-            .show()
-            .map_err(|error| error.to_string())?;
+        let state = app.state::<AppState>();
+        let should_schedule = state
+            .native_pomodoro_attempts
+            .lock()
+            .unwrap()
+            .insert(event.id);
+        if should_schedule {
+            let (title, body) = pomodoro_event_copy(app, event);
+            if let Err(error) = app.notification().builder().title(title).body(body).show() {
+                state
+                    .native_pomodoro_attempts
+                    .lock()
+                    .unwrap()
+                    .remove(&event.id);
+                return Err(error.to_string());
+            }
+        }
     }
 
     app.state::<AppState>()
