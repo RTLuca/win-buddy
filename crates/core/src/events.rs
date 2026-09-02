@@ -10,6 +10,7 @@ pub const EVT_BUBBLE_DISMISS: &str = "bubble:dismiss";
 pub const EVT_BUDDY_CHANGED: &str = "buddy:changed";
 pub const EVT_MODE_CHANGED: &str = "mode:changed";
 pub const EVT_NOTES_CHANGED: &str = "notes:changed";
+pub const EVT_FOCUS_CHANGED: &str = "focus:changed";
 
 /// Gli stati che il core può chiedere. Il renderer non ne inventa altri.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,14 +24,31 @@ pub enum BuddyState {
     Sleep,
 }
 
+/// Fase di una sessione ancora aperta. `closed` non attraversa mai il
+/// contratto del buddy: quando una sessione chiude, il campo viene omesso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveSessionPhase {
+    Running,
+    Paused,
+    ReadyToClose,
+    Overtime,
+}
+
 /// `state:changed` — core → overlay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateChanged {
     pub state: BuddyState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ActiveSessionPhase>,
     /// Scadenza assoluta (epoch ms) del countdown mostrato, se c'è.
     /// Il renderer ricalcola `until − now` a ogni frame: nessun contatore.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overtime_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -97,12 +115,17 @@ mod tests {
     fn payloads_serialize_as_documented() {
         let s = serde_json::to_value(StateChanged {
             state: BuddyState::Focus,
+            phase: Some(ActiveSessionPhase::Running),
             until: Some(123),
+            remaining_ms: Some(123),
+            overtime_ms: None,
             label: None,
         })
         .unwrap();
         assert_eq!(s["state"], "focus");
+        assert_eq!(s["phase"], "running");
         assert_eq!(s["until"], 123);
+        assert_eq!(s["remaining_ms"], 123);
         assert!(s.get("label").is_none());
 
         let b = serde_json::to_value(BubbleShow {
@@ -115,5 +138,27 @@ mod tests {
         .unwrap();
         assert_eq!(b["kind"], "reminder");
         assert_eq!(b["position"][0], 1);
+    }
+
+    #[test]
+    fn focus_state_serializes_typed_phase_and_server_clock_values() {
+        let state = StateChanged {
+            state: BuddyState::Focus,
+            phase: Some(ActiveSessionPhase::Overtime),
+            until: None,
+            remaining_ms: None,
+            overtime_ms: Some(70_000),
+            label: Some("Spec".into()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!({
+                "state": "focus",
+                "phase": "overtime",
+                "overtime_ms": 70_000,
+                "label": "Spec"
+            })
+        );
     }
 }

@@ -11,10 +11,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use win_buddy_core::dnd::DndLevel;
 use win_buddy_core::events::{
-    BubbleDismiss, BubbleKind, BubbleShow, BuddyChanged, BuddyState, ModeChanged, StateChanged,
-    EVT_BUBBLE_DISMISS, EVT_BUBBLE_SHOW, EVT_BUDDY_CHANGED, EVT_MODE_CHANGED, EVT_STATE_CHANGED,
+    ActiveSessionPhase, BubbleDismiss, BubbleKind, BubbleShow, BuddyChanged, BuddyState,
+    ModeChanged, StateChanged, EVT_BUBBLE_DISMISS, EVT_BUBBLE_SHOW, EVT_BUDDY_CHANGED,
+    EVT_MODE_CHANGED, EVT_STATE_CHANGED,
 };
-use win_buddy_core::model::SessionKind;
+use win_buddy_core::model::{PomodoroSession, SessionKind, SessionPhase};
 use win_buddy_core::pomodoro::{EventKind, PomodoroEvent, LATE_NOTIFY_MS};
 use win_buddy_core::scheduler::{presentation, Presentation};
 use win_buddy_core::{pomodoro, Store};
@@ -87,6 +88,69 @@ pub fn effective_dnd(app: &AppHandle) -> DndLevel {
 fn sober_mode(store: &Store, dnd: DndLevel) -> bool {
     dnd.policy().force_sober
         || store.setting("buddy.mode").ok().flatten().as_deref() == Some("sober")
+}
+
+fn active_state_changed(session: &PomodoroSession, now: i64) -> StateChanged {
+    let (state, phase, until, remaining_ms, overtime_ms) = match session.phase {
+        SessionPhase::Running => (
+            if session.kind == SessionKind::Focus {
+                BuddyState::Focus
+            } else {
+                BuddyState::Break
+            },
+            Some(ActiveSessionPhase::Running),
+            Some(session.deadline_at),
+            Some(session.deadline_at.saturating_sub(now).max(0)),
+            None,
+        ),
+        SessionPhase::Paused => (
+            BuddyState::Focus,
+            Some(ActiveSessionPhase::Paused),
+            None,
+            session
+                .paused_remaining_ms
+                .map(|remaining| remaining.max(0)),
+            None,
+        ),
+        SessionPhase::ReadyToClose => (
+            BuddyState::Alert,
+            Some(ActiveSessionPhase::ReadyToClose),
+            None,
+            Some(0),
+            None,
+        ),
+        SessionPhase::Overtime => (
+            BuddyState::Focus,
+            Some(ActiveSessionPhase::Overtime),
+            None,
+            None,
+            Some(
+                session
+                    .overtime_started_at
+                    .map(|started| now.saturating_sub(started).max(0))
+                    .unwrap_or(0),
+            ),
+        ),
+        SessionPhase::Closed => (BuddyState::Idle, None, None, None, None),
+    };
+    let label = if session.phase == SessionPhase::Paused {
+        Some("In pausa".into())
+    } else {
+        match session.kind {
+            SessionKind::Focus if session.intention.is_empty() => None,
+            SessionKind::Focus => Some(session.intention.clone()),
+            SessionKind::ShortBreak => Some("Pausa".into()),
+            SessionKind::LongBreak => Some("Pausa lunga".into()),
+        }
+    };
+    StateChanged {
+        state,
+        phase,
+        until,
+        remaining_ms,
+        overtime_ms,
+        label,
+    }
 }
 
 /// Riconcilia tutto. Da chiamare dopo tick, recuperi, azioni utente e
@@ -186,31 +250,27 @@ pub fn sync(app: &AppHandle) {
     }
 
     // ------------------------------------------------ stato della creatura
-    let buddy_state = if celebrating {
-        BuddyState::Celebrate
-    } else if bubble.is_some() {
-        BuddyState::Alert
-    } else if let Some(s) = &active {
-        if s.kind == SessionKind::Focus {
-            BuddyState::Focus
-        } else {
-            BuddyState::Break
-        }
-    } else if idle_ms > idle_sleep_min * 60_000 / SLEEP_FRACTION {
+    let idle_state = if idle_ms > idle_sleep_min * 60_000 / SLEEP_FRACTION {
         BuddyState::Sleep
     } else {
         BuddyState::Idle
     };
-
-    let payload = StateChanged {
-        state: buddy_state,
-        until: active.as_ref().map(|s| s.ends_at),
-        label: active.as_ref().and_then(|s| match s.kind {
-            SessionKind::Focus => s.label.clone(),
-            SessionKind::ShortBreak => Some("Pausa".into()),
-            SessionKind::LongBreak => Some("Pausa lunga".into()),
-        }),
-    };
+    let mut payload = active
+        .as_ref()
+        .map(|session| active_state_changed(session, now))
+        .unwrap_or(StateChanged {
+            state: idle_state,
+            phase: None,
+            until: None,
+            remaining_ms: None,
+            overtime_ms: None,
+            label: None,
+        });
+    if celebrating {
+        payload.state = BuddyState::Celebrate;
+    } else if bubble.is_some() {
+        payload.state = BuddyState::Alert;
+    }
     {
         let mut last = state.last_state.lock().unwrap();
         let same = last
@@ -360,6 +420,84 @@ pub fn toast_for_new_fired(app: &AppHandle, newly: &[win_buddy_core::Note]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use win_buddy_core::model::StartSession;
+
+    const MIN: i64 = 60_000;
+
+    #[test]
+    fn running_focus_state_uses_deadline_and_remaining_time() {
+        let store = Store::open_in_memory().unwrap();
+        let running = pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0)
+            .unwrap()
+            .session;
+
+        let state = active_state_changed(&running, 5 * MIN);
+
+        assert_eq!(state.state, BuddyState::Focus);
+        assert_eq!(state.phase, Some(ActiveSessionPhase::Running));
+        assert_eq!(state.until, Some(25 * MIN));
+        assert_eq!(state.remaining_ms, Some(20 * MIN));
+        assert_eq!(state.overtime_ms, None);
+        assert_eq!(state.label.as_deref(), Some("Spec"));
+    }
+
+    #[test]
+    fn paused_focus_state_keeps_focus_posture_and_frozen_clock() {
+        let store = Store::open_in_memory().unwrap();
+        let running = pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0)
+            .unwrap()
+            .session;
+        let paused = pomodoro::pause(&store, running.id, 0, 10 * MIN, None)
+            .unwrap()
+            .session;
+
+        let state = active_state_changed(&paused, 20 * MIN);
+
+        assert_eq!(state.state, BuddyState::Focus);
+        assert_eq!(state.phase, Some(ActiveSessionPhase::Paused));
+        assert_eq!(state.until, None);
+        assert_eq!(state.remaining_ms, Some(15 * MIN));
+        assert_eq!(state.overtime_ms, None);
+        assert_eq!(state.label.as_deref(), Some("In pausa"));
+    }
+
+    #[test]
+    fn ready_focus_state_is_an_alert_at_zero() {
+        let store = Store::open_in_memory().unwrap();
+        let running = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap()
+            .session;
+        pomodoro::tick(&store, MIN).unwrap();
+        let ready = store.get_session(running.id).unwrap().unwrap();
+
+        let state = active_state_changed(&ready, 2 * MIN);
+
+        assert_eq!(state.state, BuddyState::Alert);
+        assert_eq!(state.phase, Some(ActiveSessionPhase::ReadyToClose));
+        assert_eq!(state.until, None);
+        assert_eq!(state.remaining_ms, Some(0));
+        assert_eq!(state.overtime_ms, None);
+    }
+
+    #[test]
+    fn overtime_focus_state_counts_up_and_keeps_focus_posture() {
+        let store = Store::open_in_memory().unwrap();
+        let running = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap()
+            .session;
+        pomodoro::tick(&store, MIN).unwrap();
+        let overtime = pomodoro::start_overtime(&store, running.id, 1, MIN)
+            .unwrap()
+            .session;
+
+        let state = active_state_changed(&overtime, 3 * MIN);
+
+        assert_eq!(state.state, BuddyState::Focus);
+        assert_eq!(state.phase, Some(ActiveSessionPhase::Overtime));
+        assert_eq!(state.until, None);
+        assert_eq!(state.remaining_ms, None);
+        assert_eq!(state.overtime_ms, Some(2 * MIN));
+    }
 
     #[test]
     fn discreet_and_sober_modes_use_a_native_toast_even_with_an_overlay() {

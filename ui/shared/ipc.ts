@@ -8,11 +8,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CapturePreview,
   DndStatus,
+  FocusStatus,
   MonitorInfo,
   NoteView,
   OverlayBoot,
   PomodoroStatus,
   SessionKind,
+  SessionOutcome,
+  StartSession,
 } from "./contracts";
 
 export function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
@@ -41,9 +44,34 @@ export const noteSnooze = (id: number, minutes: number) =>
 
 // -------------------------------------------------------------- pomodoro
 
+export const focusStart = (request: StartSession) =>
+  invoke<FocusStatus>("focus_start", { request });
+export const focusPause = (expectedRevision: number, reason?: string | null) =>
+  invoke<FocusStatus>("focus_pause", { expectedRevision, reason: reason ?? null });
+export const focusResume = (expectedRevision: number) =>
+  invoke<FocusStatus>("focus_resume", { expectedRevision });
+export const focusAdjust = (deltaMs: number, expectedRevision: number) =>
+  invoke<FocusStatus>("focus_adjust", { deltaMs, expectedRevision });
+export const focusOvertime = (expectedRevision: number) =>
+  invoke<FocusStatus>("focus_overtime", { expectedRevision });
+export const focusFinish = (
+  outcome: SessionOutcome,
+  expectedRevision: number,
+  interruptionReason?: string | null,
+) =>
+  invoke<FocusStatus>("focus_finish", {
+    outcome,
+    expectedRevision,
+    interruptionReason: interruptionReason ?? null,
+  });
+export const focusStatus = () => invoke<FocusStatus>("focus_status");
+
+/** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
 export const pomodoroStart = (kind: SessionKind, label?: string) =>
   invoke<PomodoroStatus>("pomodoro_start", { kind, label: label ?? null });
+/** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
 export const pomodoroAbort = () => invoke<PomodoroStatus>("pomodoro_abort");
+/** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
 export const pomodoroStatus = () => invoke<PomodoroStatus>("pomodoro_status");
 export const pomodoroHistory = (limit = 50) =>
   invoke<import("./contracts").PomodoroSession[]>("pomodoro_history", { limit });

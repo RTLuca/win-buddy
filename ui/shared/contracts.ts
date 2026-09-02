@@ -72,14 +72,20 @@ export const EVT_BUDDY_CHANGED = "buddy:changed";
 export const EVT_MODE_CHANGED = "mode:changed";
 export const EVT_NOTES_CHANGED = "notes:changed";
 export const EVT_POMODORO_PRESENTATION = "pomodoro:presentation";
+export const EVT_FOCUS_CHANGED = "focus:changed";
+
+export type ActiveSessionPhase = "running" | "paused" | "ready_to_close" | "overtime";
 
 export interface StateChanged {
   state: BuddyState;
+  phase?: ActiveSessionPhase;
   /**
    * Scadenza assoluta (epoch ms) del countdown, se c'è. Il renderer
    * ricalcola `until − Date.now()` a ogni aggiornamento: nessun contatore.
    */
   until?: number;
+  remaining_ms?: number;
+  overtime_ms?: number;
   label?: string;
 }
 
@@ -136,7 +142,18 @@ export interface CapturePreview {
 }
 
 export type SessionKind = "focus" | "short_break" | "long_break";
-export type SessionOutcome = "completed" | "aborted" | "invalidated";
+export type SessionPhase = ActiveSessionPhase | "closed";
+export type SessionOutcome = "completed" | "partial" | "interrupted" | "invalidated";
+export type FocusAction =
+  | "focus.start_last"
+  | "focus.pause"
+  | "focus.resume"
+  | "focus.extend_5"
+  | "focus.capture"
+  | "focus.finish"
+  | "focus.overtime"
+  | "break.start"
+  | "break.skip";
 export type PomodoroEventKind =
   | "prewarning"
   | "ready_to_close"
@@ -155,13 +172,49 @@ export interface PomodoroPresentation {
 export interface PomodoroSession {
   id: number;
   kind: SessionKind;
+  preset_id: number | null;
+  phase: SessionPhase;
   started_at: number;
-  ends_at: number;
+  deadline_at: number;
+  paused_remaining_ms: number | null;
+  overtime_started_at: number | null;
+  intention: string;
+  category: string | null;
+  planned_duration_ms: number;
+  estimated_ms: number | null;
+  next_step: string | null;
   outcome: SessionOutcome | null;
+  interruption_reason: string | null;
   resolved_at: number | null;
+  edited_at: number | null;
+  transition_revision: number;
+  /** Bridge temporaneo per le superfici non ancora migrate. */
+  ends_at: number;
+  /** Bridge temporaneo per le superfici non ancora migrate. */
   label: string | null;
 }
 
+export interface StartSession {
+  kind: SessionKind;
+  preset_id: number | null;
+  intention: string;
+  category: string | null;
+  planned_duration_ms: number;
+  estimated_ms: number | null;
+  next_step: string | null;
+}
+
+export interface FocusStatus {
+  active: PomodoroSession | null;
+  effective_focus_ms: number;
+  remaining_ms: number | null;
+  overtime_ms: number | null;
+  allowed_actions: FocusAction[];
+  pending_captures: number;
+  transition_revision: number | null;
+}
+
+/** Contratto legacy conservato soltanto durante il piano Buddy/Surfaces. */
 export interface PomodoroStatus {
   active: PomodoroSession | null;
   focus_done_today: number;
@@ -206,7 +259,8 @@ export const KIND_LABEL: Record<SessionKind, string> = {
 
 export const OUTCOME_LABEL: Record<SessionOutcome, string> = {
   completed: "completata",
-  aborted: "interrotta",
+  partial: "parziale",
+  interrupted: "interrotta",
   invalidated: "invalidata",
 };
 

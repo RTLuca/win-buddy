@@ -172,6 +172,34 @@ fn migrate_legacy_sessions(transaction: &Transaction<'_>) -> Result<()> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::path::PathBuf;
+
+    struct TempDatabase {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl TempDatabase {
+        fn new() -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "win-buddy-v1-migration-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("buddy-v1.db");
+            Self { dir, path }
+        }
+    }
+
+    impl Drop for TempDatabase {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
 
     #[test]
     fn migrates_v1_sessions_and_seeds_classic_preset() {
@@ -203,6 +231,44 @@ mod tests {
         assert_eq!(version, 2);
         assert_eq!(preset_count, 3);
         assert_eq!(intention, "Spec");
+    }
+
+    #[test]
+    fn opens_a_v1_database_file_and_preserves_its_history() {
+        let database = TempDatabase::new();
+        {
+            let conn = Connection::open(&database.path).unwrap();
+            conn.execute_batch(include_str!("../tests/fixtures/schema-v1.sql"))
+                .unwrap();
+            conn.execute(
+                "INSERT INTO pomodoro_sessions(
+                    id,kind,started_at,ends_at,outcome,resolved_at,label
+                 ) VALUES (17,'focus',1000,1501000,'completed',1501000,'Storico v1')",
+                [],
+            )
+            .unwrap();
+        }
+
+        {
+            let store = crate::Store::open(&database.path).unwrap();
+            let history = store.session_history(10).unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].id, 17);
+            assert_eq!(history[0].intention, "Storico v1");
+            assert_eq!(history[0].started_at, 1000);
+            assert_eq!(history[0].deadline_at, 1_501_000);
+            assert_eq!(
+                history[0].outcome,
+                Some(crate::model::SessionOutcome::Completed)
+            );
+            assert_eq!(store.list_presets().unwrap().len(), 3);
+        }
+
+        let conn = Connection::open(&database.path).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
     }
 
     #[test]
