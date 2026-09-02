@@ -404,6 +404,27 @@ mod tests {
     }
 
     #[test]
+    fn stale_ready_recovery_enqueues_presentation_without_focus_changed() {
+        let store = Store::open_in_memory().unwrap();
+        pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0).unwrap();
+        let ready = pomodoro::tick(&store, MIN).unwrap().remove(0);
+        store
+            .acknowledge_presentation_event(ready.id, MIN + 1)
+            .unwrap();
+        let cfg = PomodoroConfig::load(&store);
+
+        let snapshot = apply_pomodoro_recovery(&store, 20 * MIN, MIN, 0, &cfg).unwrap();
+
+        assert!(snapshot.is_none());
+        let pending = store.pending_presentation_events().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].kind,
+            win_buddy_core::pomodoro::EventKind::RecoveryNeeded
+        );
+    }
+
+    #[test]
     fn natural_break_deadline_requests_one_focus_changed_and_keeps_return_prompt() {
         let store = Store::open_in_memory().unwrap();
         pomodoro::start_break(&store, win_buddy_core::SessionKind::ShortBreak, MIN, 0).unwrap();

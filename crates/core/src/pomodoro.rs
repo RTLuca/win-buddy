@@ -39,7 +39,7 @@ impl PomodoroConfig {
             SessionKind::ShortBreak => self.short_min,
             SessionKind::LongBreak => self.long_min,
         };
-        minutes * 60_000
+        minutes.saturating_mul(60_000)
     }
 }
 
@@ -120,8 +120,13 @@ fn transition_result(
     now: i64,
     events: Vec<PomodoroEvent>,
 ) -> Result<TransitionResult> {
+    let effective_focus_ms = if session.kind == SessionKind::Focus {
+        store.effective_focus_ms(session.id, now)?.max(0)
+    } else {
+        0
+    };
     Ok(TransitionResult {
-        effective_focus_ms: store.effective_focus_ms(session.id, now)?.max(0),
+        effective_focus_ms,
         session,
         events,
     })
@@ -200,25 +205,39 @@ pub fn adjust_duration(
     if matches!(current.phase, SessionPhase::Overtime | SessionPhase::Closed) {
         return Err(invalid_transition());
     }
-    let shifted = current
-        .deadline_at
-        .checked_add(delta_ms)
-        .ok_or_else(|| CoreError::InvalidState("durata sessione non valida".into()))?;
-    let deadline = shifted.max(now);
-    let phase = if deadline == now {
-        SessionPhase::ReadyToClose
-    } else if current.phase == SessionPhase::ReadyToClose {
-        SessionPhase::Running
-    } else {
-        current.phase
-    };
-    let paused_remaining_ms = if phase == SessionPhase::Paused {
+    let (deadline, phase, paused_remaining_ms) = if current.phase == SessionPhase::Paused {
         let remaining = current.paused_remaining_ms.ok_or_else(invalid_transition)?;
-        Some(remaining.saturating_add(delta_ms).max(0))
+        let adjusted_remaining = remaining
+            .checked_add(delta_ms)
+            .ok_or_else(|| CoreError::InvalidState("durata sessione non valida".into()))?
+            .max(0);
+        if adjusted_remaining == 0 {
+            (now, SessionPhase::ReadyToClose, None)
+        } else {
+            let adjusted_deadline = current
+                .deadline_at
+                .checked_add(delta_ms)
+                .ok_or_else(|| CoreError::InvalidState("durata sessione non valida".into()))?;
+            (adjusted_deadline, SessionPhase::Paused, Some(adjusted_remaining))
+        }
     } else {
-        None
+        let shifted = current
+            .deadline_at
+            .checked_add(delta_ms)
+            .ok_or_else(|| CoreError::InvalidState("durata sessione non valida".into()))?;
+        let deadline = shifted.max(now);
+        let phase = if deadline == now {
+            SessionPhase::ReadyToClose
+        } else if current.phase == SessionPhase::ReadyToClose {
+            SessionPhase::Running
+        } else {
+            current.phase
+        };
+        (deadline, phase, None)
     };
     let leaves_pause = current.phase == SessionPhase::Paused && phase != SessionPhase::Paused;
+    let acknowledge_obsolete_ready =
+        current.phase == SessionPhase::ReadyToClose && phase != SessionPhase::ReadyToClose;
     let event_kind = (phase == SessionPhase::ReadyToClose).then_some(EventKind::ReadyToClose);
     let (session, durable_event) = store.adjust_session(
         id,
@@ -230,6 +249,7 @@ pub fn adjust_duration(
             adjusted_at: now,
             close_open_pause: leaves_pause,
             presentation_event: event_kind,
+            acknowledge_obsolete_ready,
         },
     )?;
     let events = durable_event.into_iter().collect();
@@ -470,6 +490,14 @@ pub fn resolve_open(
     }
 
     if current.kind == SessionKind::Focus && current.phase == SessionPhase::ReadyToClose {
+        if is_stale {
+            store.enqueue_current_presentation_event(
+                current.id,
+                current.transition_revision,
+                EventKind::RecoveryNeeded,
+                now,
+            )?;
+        }
         return Ok(Recovery::ReadyToClose(current));
     }
 
@@ -522,6 +550,19 @@ mod tests {
             long_every: 4,
             stale_sec: 120,
         }
+    }
+
+    #[test]
+    fn config_duration_saturates_instead_of_overflowing() {
+        let config = PomodoroConfig {
+            focus_min: i64::MAX,
+            short_min: 5,
+            long_min: 20,
+            long_every: 4,
+            stale_sec: 120,
+        };
+
+        assert_eq!(config.duration_ms(SessionKind::Focus), i64::MAX);
     }
 
     fn complete_focuses(store: &Store, started_at_values: &[i64]) {
@@ -673,6 +714,20 @@ mod tests {
         pause(&s, active.id, 0, 10 * MIN, None).unwrap();
         let resumed = resume(&s, active.id, 1, 20 * MIN).unwrap();
         assert_eq!(resumed.session.deadline_at, 35 * MIN);
+    }
+
+    #[test]
+    fn paused_adjust_uses_frozen_remaining_after_wall_clock_advances() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        pause(&s, active.id, 0, 10 * MIN, None).unwrap();
+
+        let adjusted = adjust_duration(&s, active.id, 1, 5 * MIN, 100 * MIN).unwrap();
+
+        assert_eq!(adjusted.session.phase, SessionPhase::Paused);
+        assert_eq!(adjusted.session.paused_remaining_ms, Some(20 * MIN));
+        let resumed = resume(&s, active.id, 2, 100 * MIN).unwrap();
+        assert_eq!(resumed.session.deadline_at, 120 * MIN);
     }
 
     #[test]
@@ -966,6 +1021,7 @@ mod tests {
 
         assert_eq!(skipped.session.outcome, Some(SessionOutcome::Partial));
         assert_eq!(skipped.session.phase, SessionPhase::Closed);
+        assert_eq!(skipped.effective_focus_ms, 0);
     }
 
     #[test]
@@ -1194,5 +1250,27 @@ mod tests {
         let stored = s.get_session(focus.id).unwrap().unwrap();
         assert_eq!(stored.phase, SessionPhase::ReadyToClose);
         assert_eq!(stored.outcome, None);
+    }
+
+    #[test]
+    fn stale_ready_focus_enqueues_one_recovery_event_after_ready_was_acknowledged() {
+        let s = setup();
+        let focus = start(&s, request(MIN), 0).unwrap().session;
+        let ready = tick(&s, MIN).unwrap().remove(0);
+        s.acknowledge_presentation_event(ready.id, MIN + 1).unwrap();
+
+        let first = resolve_open(&s, 20 * MIN, MIN, 0, &PomodoroConfig::load(&s)).unwrap();
+        let second = resolve_open(&s, 20 * MIN, MIN, 0, &PomodoroConfig::load(&s)).unwrap();
+
+        assert!(matches!(first, Recovery::ReadyToClose(_)));
+        assert!(matches!(second, Recovery::ReadyToClose(_)));
+        let stored = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(stored.phase, SessionPhase::ReadyToClose);
+        assert_eq!(stored.transition_revision, 1);
+        let pending = s.pending_presentation_events().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].session_id, focus.id);
+        assert_eq!(pending[0].kind, EventKind::RecoveryNeeded);
+        assert_eq!(pending[0].transition_revision, 1);
     }
 }

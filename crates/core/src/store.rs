@@ -25,6 +25,7 @@ pub(crate) struct SessionAdjustment {
     pub adjusted_at: i64,
     pub close_open_pause: bool,
     pub presentation_event: Option<EventKind>,
+    pub acknowledge_obsolete_ready: bool,
 }
 
 fn note_from_row(row: &Row) -> rusqlite::Result<Note> {
@@ -172,6 +173,22 @@ fn enqueue_presentation_event(
         kind,
         transition_revision,
     })
+}
+
+fn acknowledge_obsolete_ready_events(
+    transaction: &Transaction<'_>,
+    session_id: i64,
+    before_revision: i64,
+    acknowledged_at: i64,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE pomodoro_presentation_events
+         SET acknowledged_at = ?3
+         WHERE session_id = ?1 AND kind = 'ready_to_close'
+           AND transition_revision < ?2 AND acknowledged_at IS NULL",
+        params![session_id, before_revision, acknowledged_at],
+    )?;
+    Ok(())
 }
 
 #[allow(dead_code)] // Primitive revisionale consumata dalla macchina a stati del core.
@@ -577,6 +594,14 @@ impl Store {
             [id],
             |row| row.get(0),
         )?;
+        if adjustment.acknowledge_obsolete_ready {
+            acknowledge_obsolete_ready_events(
+                &transaction,
+                id,
+                transition_revision,
+                adjustment.adjusted_at,
+            )?;
+        }
         let event = adjustment
             .presentation_event
             .map(|kind| {
@@ -685,6 +710,9 @@ impl Store {
             [id],
             |row| row.get(0),
         )?;
+        if phase == SessionPhase::Overtime {
+            acknowledge_obsolete_ready_events(&transaction, id, transition_revision, at_ms)?;
+        }
         let event = event_kind
             .map(|kind| {
                 enqueue_presentation_event(&transaction, id, kind, transition_revision, at_ms)
@@ -1001,17 +1029,7 @@ impl Store {
         outcome: SessionOutcome,
         now: i64,
     ) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE pomodoro_sessions
-             SET outcome = ?3,
-                 phase = 'closed', resolved_at = ?4,
-                 transition_revision = transition_revision + 1
-             WHERE id = ?1 AND transition_revision = ?2 AND outcome IS NULL",
-            params![id, expected_revision, outcome.as_str(), now],
-        )?;
-        if changed != 1 {
-            return Err(session_already_updated());
-        }
+        self.finish_session_internal(id, expected_revision, outcome, None, now, None)?;
         Ok(())
     }
 
@@ -1257,6 +1275,99 @@ mod tests {
     }
 
     #[test]
+    fn resolve_session_clamps_open_pause_and_acknowledges_obsolete_events() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", 25 * MIN), 10 * MIN)
+            .unwrap();
+        let paused = s.pause_session(focus.id, 0, 15 * MIN, None).unwrap();
+        let event = s
+            .enqueue_current_presentation_event(
+                focus.id,
+                paused.transition_revision,
+                EventKind::RecoveryNeeded,
+                16 * MIN,
+            )
+            .unwrap();
+
+        s.resolve_session(
+            focus.id,
+            paused.transition_revision,
+            SessionOutcome::Interrupted,
+            14 * MIN,
+        )
+        .unwrap();
+
+        let closed = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(closed.phase, SessionPhase::Closed);
+        assert_eq!(closed.resolved_at, Some(15 * MIN));
+        let pause_end: i64 = s
+            .conn
+            .query_row(
+                "SELECT ended_at FROM pomodoro_pause_intervals WHERE session_id = ?1",
+                [focus.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pause_end, 15 * MIN);
+        assert!(!s
+            .pending_presentation_events()
+            .unwrap()
+            .iter()
+            .any(|pending| pending.id == event.id));
+    }
+
+    #[test]
+    fn resolve_session_ack_failure_rolls_back_pause_and_session() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", 25 * MIN), 0)
+            .unwrap();
+        let paused = s.pause_session(focus.id, 0, 10 * MIN, None).unwrap();
+        let event = s
+            .enqueue_current_presentation_event(
+                focus.id,
+                paused.transition_revision,
+                EventKind::RecoveryNeeded,
+                11 * MIN,
+            )
+            .unwrap();
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_test_resolve_ack
+                 BEFORE UPDATE OF acknowledged_at ON pomodoro_presentation_events
+                 WHEN NEW.acknowledged_at IS NOT NULL
+                 BEGIN SELECT RAISE(ABORT, 'forced resolve ack failure'); END;",
+            )
+            .unwrap();
+
+        let error = s
+            .resolve_session(
+                focus.id,
+                paused.transition_revision,
+                SessionOutcome::Interrupted,
+                15 * MIN,
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Db(_)));
+        let unchanged = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::Paused);
+        assert_eq!(unchanged.outcome, None);
+        assert_eq!(unchanged.transition_revision, paused.transition_revision);
+        let pause_end: Option<i64> = s
+            .conn
+            .query_row(
+                "SELECT ended_at FROM pomodoro_pause_intervals WHERE session_id = ?1",
+                [focus.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pause_end, None);
+        assert_eq!(s.pending_presentation_events().unwrap(), vec![event]);
+    }
+
+    #[test]
     fn finish_session_closes_and_caps_effective_time_at_resolution() {
         let s = store();
         let started = s
@@ -1303,6 +1414,103 @@ mod tests {
         let unchanged = s.get_session(focus.id).unwrap().unwrap();
         assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
         assert_eq!(unchanged.outcome, None);
+        assert_eq!(unchanged.transition_revision, 1);
+        assert_eq!(s.pending_presentation_events().unwrap(), vec![event]);
+    }
+
+    #[test]
+    fn extending_ready_focus_only_acknowledges_its_obsolete_ready_event() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let obsolete = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.conn
+            .execute(
+                "INSERT INTO pomodoro_presentation_events(
+                   session_id,kind,transition_revision,created_at,acknowledged_at
+                 ) VALUES (?1,'ready_to_close',2,?2,NULL)",
+                params![focus.id, MIN + 1],
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO pomodoro_sessions(
+                   kind,phase,started_at,deadline_at,intention,planned_duration_ms,
+                   outcome,resolved_at,transition_revision
+                 ) VALUES ('focus','closed',0,1,'Other',1,'completed',1,1)",
+                [],
+            )
+            .unwrap();
+        let other_id = s.conn.last_insert_rowid();
+        s.conn
+            .execute(
+                "INSERT INTO pomodoro_presentation_events(
+                   session_id,kind,transition_revision,created_at,acknowledged_at
+                 ) VALUES (?1,'ready_to_close',1,?2,NULL)",
+                params![other_id, MIN + 2],
+            )
+            .unwrap();
+
+        let adjusted = crate::pomodoro::adjust_duration(&s, focus.id, 1, 5 * MIN, MIN).unwrap();
+
+        assert_eq!(adjusted.session.phase, SessionPhase::Running);
+        assert_eq!(adjusted.session.transition_revision, 2);
+        let pending = s.pending_presentation_events().unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(!pending.iter().any(|event| event.id == obsolete.id));
+        assert!(pending
+            .iter()
+            .any(|event| event.session_id == focus.id && event.transition_revision == 2));
+        assert!(pending.iter().any(|event| event.session_id == other_id));
+    }
+
+    #[test]
+    fn ready_event_ack_failure_rolls_back_duration_extension() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_test_ready_ack_on_adjust
+                 BEFORE UPDATE OF acknowledged_at ON pomodoro_presentation_events
+                 WHEN NEW.acknowledged_at IS NOT NULL
+                 BEGIN SELECT RAISE(ABORT, 'forced ready ack failure'); END;",
+            )
+            .unwrap();
+
+        let error = crate::pomodoro::adjust_duration(&s, focus.id, 1, MIN, MIN).unwrap_err();
+
+        assert!(matches!(error, CoreError::Db(_)));
+        let unchanged = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
+        assert_eq!(unchanged.transition_revision, 1);
+        assert_eq!(s.pending_presentation_events().unwrap(), vec![event]);
+    }
+
+    #[test]
+    fn ready_event_ack_failure_rolls_back_start_overtime() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_test_ready_ack_on_overtime
+                 BEFORE UPDATE OF acknowledged_at ON pomodoro_presentation_events
+                 WHEN NEW.acknowledged_at IS NOT NULL
+                 BEGIN SELECT RAISE(ABORT, 'forced ready ack failure'); END;",
+            )
+            .unwrap();
+
+        let error = crate::pomodoro::start_overtime(&s, focus.id, 1, MIN).unwrap_err();
+
+        assert!(matches!(error, CoreError::Db(_)));
+        let unchanged = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
         assert_eq!(unchanged.transition_revision, 1);
         assert_eq!(s.pending_presentation_events().unwrap(), vec![event]);
     }
