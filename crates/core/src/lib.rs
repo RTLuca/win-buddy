@@ -14,7 +14,10 @@ pub mod scheduler;
 pub mod store;
 
 pub use dnd::{DndLevel, SurfacePolicy};
-pub use model::{Note, NoteState, PomodoroSession, SessionKind, SessionOutcome};
+pub use model::{
+    Note, NoteState, PomodoroPreset, PomodoroSession, PresentationEvent, SessionKind,
+    SessionOutcome, SessionPhase, SessionSnapshot, StartSession,
+};
 pub use store::Store;
 
 #[derive(thiserror::Error, Debug)]
