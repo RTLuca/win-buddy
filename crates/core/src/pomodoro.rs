@@ -340,11 +340,17 @@ pub fn accept_proposed_break(
     day_start: i64,
     cfg: &PomodoroConfig,
 ) -> Result<()> {
+    let current_started_today = store
+        .open_session()?
+        .is_some_and(|session| session.started_at >= day_start);
     let completed_after_current = store
         .completed_focus_since(day_start)?
-        .checked_add(1)
+        .checked_add(i64::from(current_started_today))
         .ok_or_else(|| CoreError::InvalidState("conteggio focus non valido".into()))?;
-    let kind = if cfg.long_every > 0 && completed_after_current % cfg.long_every == 0 {
+    let kind = if cfg.long_every > 0
+        && completed_after_current > 0
+        && completed_after_current % cfg.long_every == 0
+    {
         SessionKind::LongBreak
     } else {
         SessionKind::ShortBreak
@@ -508,6 +514,31 @@ mod tests {
         StartSession::focus(1, "Spec", duration_ms)
     }
 
+    fn four_focus_cycle_config() -> PomodoroConfig {
+        PomodoroConfig {
+            focus_min: 25,
+            short_min: 5,
+            long_min: 20,
+            long_every: 4,
+            stale_sec: 120,
+        }
+    }
+
+    fn complete_focuses(store: &Store, started_at_values: &[i64]) {
+        for &started_at in started_at_values {
+            let focus = start(store, request(MIN), started_at).unwrap().session;
+            finish(
+                store,
+                focus.id,
+                0,
+                SessionOutcome::Completed,
+                None,
+                started_at + MIN,
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
     fn deadline_requires_explicit_close_or_overtime() {
         let s = setup();
@@ -542,6 +573,68 @@ mod tests {
         assert_eq!(
             s.open_session().unwrap().unwrap().kind,
             SessionKind::ShortBreak
+        );
+        assert!(s.pending_presentation_events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn accepting_focus_started_before_day_boundary_does_not_trigger_long_break() {
+        let s = setup();
+        let day_start = 24 * 60 * MIN;
+        let cfg = four_focus_cycle_config();
+        complete_focuses(&s, &[day_start, day_start + 2 * MIN, day_start + 4 * MIN]);
+        let crossing_focus = start(&s, request(MIN), day_start - MIN).unwrap().session;
+        let event = tick(&s, day_start + 6 * MIN).unwrap().remove(0);
+
+        accept_proposed_break(&s, event.id, day_start + 6 * MIN + 1, day_start, &cfg).unwrap();
+
+        assert_eq!(
+            s.get_session(crossing_focus.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert_eq!(
+            s.open_session().unwrap().unwrap().kind,
+            SessionKind::ShortBreak
+        );
+        assert!(s.pending_presentation_events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn accepting_focus_started_before_day_with_no_today_completions_starts_short_break() {
+        let s = setup();
+        let day_start = 24 * 60 * MIN;
+        let cfg = four_focus_cycle_config();
+        start(&s, request(MIN), day_start - MIN).unwrap();
+        let event = tick(&s, day_start).unwrap().remove(0);
+
+        accept_proposed_break(&s, event.id, day_start + 1, day_start, &cfg).unwrap();
+
+        assert_eq!(
+            s.open_session().unwrap().unwrap().kind,
+            SessionKind::ShortBreak
+        );
+    }
+
+    #[test]
+    fn accepting_fourth_focus_started_today_triggers_long_break() {
+        let s = setup();
+        let day_start = 24 * 60 * MIN;
+        let cfg = four_focus_cycle_config();
+        complete_focuses(&s, &[day_start, day_start + 2 * MIN, day_start + 4 * MIN]);
+        let fourth = start(&s, request(MIN), day_start + 6 * MIN)
+            .unwrap()
+            .session;
+        let event = tick(&s, day_start + 7 * MIN).unwrap().remove(0);
+
+        accept_proposed_break(&s, event.id, day_start + 7 * MIN + 1, day_start, &cfg).unwrap();
+
+        assert_eq!(
+            s.get_session(fourth.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert_eq!(
+            s.open_session().unwrap().unwrap().kind,
+            SessionKind::LongBreak
         );
         assert!(s.pending_presentation_events().unwrap().is_empty());
     }
