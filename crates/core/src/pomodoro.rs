@@ -148,6 +148,11 @@ pub fn pause(
     if current.kind != SessionKind::Focus || current.phase != SessionPhase::Running {
         return Err(invalid_transition());
     }
+    if now >= current.deadline_at {
+        let session = store.set_phase(id, SessionPhase::ReadyToClose, expected_revision, now)?;
+        let events = vec![event(&session, EventKind::ReadyToClose)];
+        return transition_result(store, session, now, events);
+    }
     let session = store.pause_session(id, expected_revision, now, reason)?;
     transition_result(store, session, now, vec![])
 }
@@ -331,7 +336,7 @@ pub fn tick(store: &Store, now: i64) -> Result<Vec<PomodoroEvent>> {
             )?;
             Ok(vec![event(&session, EventKind::ReadyToClose)])
         }
-        (kind, SessionPhase::Running | SessionPhase::ReadyToClose) if kind.is_break() => {
+        (kind, SessionPhase::Running) if kind.is_break() => {
             let session = store.finish_session(
                 current.id,
                 current.transition_revision,
@@ -383,6 +388,18 @@ pub fn resolve_open(
     }
 
     if is_stale {
+        if current.kind.is_break()
+            && current.phase == SessionPhase::Running
+            && now >= current.deadline_at
+        {
+            let session = store.set_phase(
+                current.id,
+                SessionPhase::ReadyToClose,
+                current.transition_revision,
+                now,
+            )?;
+            return Ok(vec![event(&session, EventKind::RecoveryNeeded)]);
+        }
         return Ok(vec![event(&current, EventKind::RecoveryNeeded)]);
     }
 
@@ -447,6 +464,21 @@ mod tests {
         pause(&s, active.id, 0, 10 * MIN, None).unwrap();
         let resumed = resume(&s, active.id, 1, 20 * MIN).unwrap();
         assert_eq!(resumed.session.deadline_at, 35 * MIN);
+    }
+
+    #[test]
+    fn pause_at_deadline_marks_ready_without_opening_pause() {
+        let s = setup();
+        let active = start(&s, request(MIN), 0).unwrap().session;
+
+        let ready = pause(&s, active.id, 0, MIN, None).unwrap();
+
+        assert_eq!(ready.session.phase, SessionPhase::ReadyToClose);
+        assert_eq!(ready.session.transition_revision, 1);
+        assert_eq!(ready.events.len(), 1);
+        assert_eq!(ready.events[0].kind, EventKind::ReadyToClose);
+        let closed = finish(&s, active.id, 1, SessionOutcome::Completed, None, 2 * MIN).unwrap();
+        assert_eq!(closed.effective_focus_ms, 2 * MIN);
     }
 
     #[test]
@@ -525,6 +557,37 @@ mod tests {
             closed.session.interruption_reason.as_deref(),
             Some("meeting")
         );
+    }
+
+    #[test]
+    fn finish_before_pause_start_does_not_inflate_effective_focus() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 10 * MIN).unwrap().session;
+        pause(&s, active.id, 0, 15 * MIN, None).unwrap();
+
+        let closed = finish(
+            &s,
+            active.id,
+            1,
+            SessionOutcome::Interrupted,
+            None,
+            14 * MIN,
+        )
+        .unwrap();
+
+        assert_eq!(closed.session.resolved_at, Some(14 * MIN));
+        assert_eq!(closed.effective_focus_ms, 4 * MIN);
+    }
+
+    #[test]
+    fn finish_before_session_start_clamps_resolution_to_session_start() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 10 * MIN).unwrap().session;
+
+        let closed = finish(&s, active.id, 0, SessionOutcome::Interrupted, None, 5 * MIN).unwrap();
+
+        assert_eq!(closed.session.resolved_at, Some(10 * MIN));
+        assert_eq!(closed.effective_focus_ms, 0);
     }
 
     #[test]
@@ -681,6 +744,28 @@ mod tests {
             long.get_session(long_focus.id).unwrap().unwrap().outcome,
             None
         );
+    }
+
+    #[test]
+    fn stale_expired_break_stays_reviewable_after_followup_tick() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, 5 * MIN, 0)
+            .unwrap()
+            .session;
+
+        let recovered = resolve_open(&s, 20 * MIN, 0, 0, &PomodoroConfig::load(&s)).unwrap();
+        let after_recovery = s.get_session(break_session.id).unwrap().unwrap();
+        let tick_events = tick(&s, 20 * MIN).unwrap();
+        let after_tick = s.get_session(break_session.id).unwrap().unwrap();
+
+        assert_eq!(recovered[0].kind, EventKind::RecoveryNeeded);
+        assert_eq!(after_recovery.phase, SessionPhase::ReadyToClose);
+        assert_eq!(after_recovery.outcome, None);
+        assert!(tick_events
+            .iter()
+            .all(|event| event.kind != EventKind::ReturnPrompt));
+        assert_eq!(after_tick.phase, SessionPhase::ReadyToClose);
+        assert_eq!(after_tick.outcome, None);
     }
 
     #[test]

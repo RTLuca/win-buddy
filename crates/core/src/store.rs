@@ -620,14 +620,15 @@ impl Store {
     ) -> Result<PomodoroSession> {
         let transaction = self.conn.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE pomodoro_pause_intervals SET ended_at = ?2
+            "UPDATE pomodoro_pause_intervals SET ended_at = MAX(started_at, ?2)
              WHERE session_id = ?1 AND ended_at IS NULL",
             params![id, resolved_at],
         )?;
         let changed = transaction.execute(
             "UPDATE pomodoro_sessions
              SET phase = ?2, outcome = ?4, interruption_reason = ?5,
-                 resolved_at = ?6, transition_revision = transition_revision + 1
+                 resolved_at = MAX(started_at, ?6),
+                 transition_revision = transition_revision + 1
              WHERE id = ?1 AND transition_revision = ?3 AND outcome IS NULL",
             params![
                 id,
@@ -649,9 +650,9 @@ impl Store {
     pub fn effective_focus_ms(&self, id: i64, at_ms: i64) -> Result<i64> {
         self.conn
             .query_row(
-                "SELECT MIN(COALESCE(s.resolved_at, ?2), ?2) - s.started_at
+                "SELECT MAX(MIN(COALESCE(s.resolved_at, ?2), ?2) - s.started_at, 0)
                         - COALESCE(SUM(
-                            MIN(COALESCE(p.ended_at, ?2), ?2) - p.started_at
+                            MAX(MIN(COALESCE(p.ended_at, ?2), ?2) - p.started_at, 0)
                           ), 0)
                  FROM pomodoro_sessions s
                  LEFT JOIN pomodoro_pause_intervals p ON p.session_id = s.id
