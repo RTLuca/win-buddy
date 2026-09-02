@@ -13,6 +13,7 @@ import type {
   MonitorInfo,
   NoteView,
   OverlayBoot,
+  PomodoroPreset,
   PomodoroStatus,
   SessionKind,
   StartSession,
@@ -65,6 +66,7 @@ export const focusFinish = (
     interruptionReason: interruptionReason ?? null,
   });
 export const focusStatus = () => invoke<FocusStatus>("focus_status");
+export const focusPresets = () => invoke<PomodoroPreset[]>("focus_presets");
 
 /** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
 export const pomodoroStart = (kind: SessionKind, label?: string) =>

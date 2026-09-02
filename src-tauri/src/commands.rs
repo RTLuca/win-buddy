@@ -17,7 +17,8 @@ use win_buddy_core::events::{
     BubbleShow, HitBox, StateChanged, EVT_FOCUS_CHANGED, EVT_NOTES_CHANGED,
 };
 use win_buddy_core::model::{
-    Note, NoteState, PomodoroSession, SessionKind, SessionOutcome, SessionPhase, StartSession,
+    Note, NoteState, PomodoroPreset, PomodoroSession, SessionKind, SessionOutcome, SessionPhase,
+    StartSession,
 };
 use win_buddy_core::parse;
 use win_buddy_core::pomodoro::{self, PomodoroConfig};
@@ -225,6 +226,10 @@ pub(crate) fn focus_status_from_store(
         pending_captures: 0,
         transition_revision,
     })
+}
+
+fn focus_presets_from_store(store: &Store) -> win_buddy_core::Result<Vec<PomodoroPreset>> {
+    store.list_presets()
 }
 
 fn focus_command_error_from_store(
@@ -668,6 +673,12 @@ pub async fn focus_finish(
 #[tauri::command]
 pub fn focus_status(app: AppHandle) -> FocusCmdResult<FocusStatusDto> {
     focus_status_dto(&app).map_err(focus_internal_error)
+}
+
+#[tauri::command]
+pub fn focus_presets(state: State<AppState>) -> CmdResult<Vec<PomodoroPreset>> {
+    let store = state.store.lock().unwrap();
+    focus_presets_from_store(&store).map_err(err)
 }
 
 pub fn do_pomodoro_start(
@@ -1167,6 +1178,20 @@ mod tests {
                 "transition_revision": null
             })
         );
+    }
+
+    #[test]
+    fn focus_presets_command_reads_the_ordered_core_presets() {
+        let store = Store::open_in_memory().unwrap();
+
+        let presets = focus_presets_from_store(&store).unwrap();
+
+        assert_eq!(presets.len(), 3);
+        assert_eq!(presets[0].name, "Classico");
+        assert_eq!(presets[1].name, "Deep Work");
+        assert_eq!(presets[2].name, "Sprint");
+        assert!(presets[0].is_default);
+        assert_eq!(presets[1].focus_ms, 50 * MIN);
     }
 
     #[test]

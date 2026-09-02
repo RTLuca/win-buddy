@@ -53,6 +53,7 @@ pub fn run() {
             commands::focus_overtime,
             commands::focus_finish,
             commands::focus_status,
+            commands::focus_presets,
             commands::pomodoro_start,
             commands::pomodoro_abort,
             commands::pomodoro_status,

@@ -206,6 +206,21 @@ export interface StartSession {
   next_step: string | null;
 }
 
+export interface PomodoroPreset {
+  id: number;
+  name: string;
+  focus_ms: number;
+  short_break_ms: number;
+  long_break_ms: number;
+  long_every: number;
+  auto_start_break: boolean;
+  auto_start_focus: boolean;
+  is_default: boolean;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface FocusStatus {
   active: PomodoroSession | null;
   effective_focus_ms: number;

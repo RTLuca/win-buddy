@@ -12,7 +12,7 @@
       <nav class="tabs" id="tabs">
         <button type="button" data-tab="open" class="on">Aperte</button>
         <button type="button" data-tab="archive">Archivio</button>
-        <button type="button" data-tab="pomodoro">Pomodoro</button>
+        <button type="button" data-tab="focus">Focus</button>
         <button type="button" data-tab="settings">Impostazioni</button>
       </nav>
     </header>
@@ -45,30 +45,137 @@
       <div id="archiveList" class="list"></div>
     </section>
 
-    <!-- --------------------------------------------------- pomodoro -->
-    <section id="tab-pomodoro" class="tab">
-      <div id="pomoActive" class="pomo-active" hidden>
-        <div class="pomo-kind" id="pomoKind"></div>
-        <div class="pomo-clock" id="pomoClock">--:--</div>
-        <div class="pomo-label" id="pomoLabel"></div>
-        <button type="button" id="pomoAbort" class="ghost">Interrompi</button>
-      </div>
-      <div id="pomoIdle" class="pomo-idle">
-        <input
-          id="pomoTask"
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="Su cosa lavori? (facoltativo)"
-        />
-        <div class="pomo-buttons">
-          <button type="button" id="startFocus" class="primary">Avvia focus</button>
-          <button type="button" id="startBreak" class="ghost">Pausa</button>
+    <!-- ------------------------------------------------------- focus -->
+    <section id="tab-focus" class="tab focus-tab">
+      <nav id="focusTabs" class="focus-tabs" aria-label="Viste Focus" role="tablist">
+        <button
+          id="focusTabPrepare"
+          type="button"
+          role="tab"
+          data-focus-pane="prepare"
+          aria-controls="focusPrepare"
+          aria-selected="true"
+        >Prepara</button>
+        <button
+          id="focusTabHistory"
+          type="button"
+          role="tab"
+          data-focus-pane="history"
+          aria-controls="focusHistory"
+          aria-selected="false"
+          tabindex="-1"
+        >Registro</button>
+        <button
+          id="focusTabStats"
+          type="button"
+          role="tab"
+          data-focus-pane="stats"
+          aria-controls="focusStats"
+          aria-selected="false"
+          tabindex="-1"
+        >Statistiche</button>
+      </nav>
+
+      <section
+        id="focusPrepare"
+        class="focus-pane"
+        role="tabpanel"
+        aria-labelledby="focusTabPrepare"
+      >
+        <div id="focusPrepareState" class="focus-state" role="status">
+          <span class="focus-skeleton wide"></span>
+          <span class="focus-skeleton"></span>
+          <span class="sr-only">Caricamento focus</span>
         </div>
-      </div>
-      <div class="pomo-today" id="pomoToday"></div>
-      <h3 class="section-title">Storico</h3>
-      <div id="historyList" class="list"></div>
+
+        <form id="focusPrepareForm" class="focus-form" hidden>
+          <label class="focus-field">
+            <span>Alla fine avrò…</span>
+            <textarea
+              id="focusIntention"
+              rows="2"
+              maxlength="240"
+              spellcheck="true"
+              placeholder="Descrivi il risultato della sessione"
+            ></textarea>
+          </label>
+
+          <label class="focus-field">
+            <span>Preset</span>
+            <select id="focusPreset"></select>
+            <small id="focusPresetHint">Durata e pause arrivano dal preset salvato.</small>
+          </label>
+
+          <div class="focus-field-grid">
+            <label class="focus-field">
+              <span>Durata una tantum</span>
+              <span class="focus-number-wrap">
+                <input id="focusDuration" type="number" min="1" max="720" inputmode="numeric" />
+                <span>min</span>
+              </span>
+            </label>
+            <label class="focus-field">
+              <span>Stima</span>
+              <span class="focus-number-wrap">
+                <input id="focusEstimate" type="number" min="1" max="1440" inputmode="numeric" />
+                <span>min</span>
+              </span>
+            </label>
+          </div>
+
+          <label class="focus-field">
+            <span>Categoria</span>
+            <input id="focusCategory" type="text" maxlength="80" autocomplete="off" />
+          </label>
+
+          <label class="focus-field">
+            <span>Prossimo passo</span>
+            <input id="focusNextStep" type="text" maxlength="240" autocomplete="off" />
+          </label>
+
+          <button type="submit" id="focusStart" class="primary focus-start">Avvia focus</button>
+        </form>
+
+        <div id="focusRunning" class="focus-running" hidden></div>
+        <p id="focusError" class="focus-error" role="alert" hidden></p>
+      </section>
+
+      <section
+        id="focusHistory"
+        class="focus-pane"
+        role="tabpanel"
+        aria-labelledby="focusTabHistory"
+        hidden
+      >
+        <div class="focus-pane-head">
+          <div>
+            <p class="focus-eyebrow">Dati locali</p>
+            <h2>Registro</h2>
+          </div>
+          <button type="button" id="focusHistoryRefresh" class="ghost compact">Aggiorna</button>
+        </div>
+        <div id="focusHistoryContent" class="focus-history" aria-live="polite">
+          <div class="focus-state">Caricamento registro…</div>
+        </div>
+      </section>
+
+      <section
+        id="focusStats"
+        class="focus-pane"
+        role="tabpanel"
+        aria-labelledby="focusTabStats"
+        hidden
+      >
+        <div class="focus-pane-head">
+          <div>
+            <p class="focus-eyebrow">Periodo caricato</p>
+            <h2>Statistiche</h2>
+          </div>
+        </div>
+        <div id="focusStatsContent" class="focus-stats" aria-live="polite">
+          <div class="focus-state">Caricamento statistiche…</div>
+        </div>
+      </section>
     </section>
 
     <!-- ----------------------------------------------- impostazioni -->
