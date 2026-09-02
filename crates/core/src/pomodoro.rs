@@ -98,7 +98,12 @@ pub fn start(
     cfg: &PomodoroConfig,
 ) -> Result<PomodoroSession> {
     for open in store.open_sessions()? {
-        store.resolve_session(open.id, SessionOutcome::Aborted, now)?;
+        store.resolve_session(
+            open.id,
+            open.transition_revision,
+            SessionOutcome::Aborted,
+            now,
+        )?;
     }
     store.start_session(kind, now, now + cfg.duration_ms(kind), label)
 }
@@ -108,7 +113,12 @@ pub fn abort(store: &Store, now: i64) -> Result<Option<PomodoroSession>> {
     let open = store.open_sessions()?;
     let current = open.into_iter().next();
     if let Some(s) = &current {
-        store.resolve_session(s.id, SessionOutcome::Aborted, now)?;
+        store.resolve_session(
+            s.id,
+            s.transition_revision,
+            SessionOutcome::Aborted,
+            now,
+        )?;
     }
     Ok(current)
 }
@@ -132,7 +142,12 @@ pub fn tick(store: &Store, now: i64, day_start: i64, cfg: &PomodoroConfig) -> Re
         if now < s.ends_at {
             continue;
         }
-        store.resolve_session(s.id, SessionOutcome::Completed, now)?;
+        store.resolve_session(
+            s.id,
+            s.transition_revision,
+            SessionOutcome::Completed,
+            now,
+        )?;
         let session = store.get_session(s.id)?.expect("appena risolta");
         if s.kind == SessionKind::Focus {
             let proposed = proposed_break(store, day_start, cfg)?;
@@ -167,12 +182,22 @@ pub fn resolve_open(
             if gap_ms <= stale_ms {
                 events.push(PomodoroEvent::Resumed { session: s });
             } else {
-                store.resolve_session(s.id, SessionOutcome::Invalidated, now)?;
+                store.resolve_session(
+                    s.id,
+                    s.transition_revision,
+                    SessionOutcome::Invalidated,
+                    now,
+                )?;
                 let session = store.get_session(s.id)?.expect("appena risolta");
                 events.push(PomodoroEvent::Invalidated { session });
             }
         } else if now - s.ends_at < LATE_NOTIFY_MS {
-            store.resolve_session(s.id, SessionOutcome::Completed, now)?;
+            store.resolve_session(
+                s.id,
+                s.transition_revision,
+                SessionOutcome::Completed,
+                now,
+            )?;
             let session = store.get_session(s.id)?.expect("appena risolta");
             if s.kind == SessionKind::Focus {
                 let proposed = proposed_break(store, day_start, cfg)?;
@@ -181,7 +206,12 @@ pub fn resolve_open(
                 events.push(PomodoroEvent::BreakCompleted { session });
             }
         } else {
-            store.resolve_session(s.id, SessionOutcome::Invalidated, now)?;
+            store.resolve_session(
+                s.id,
+                s.transition_revision,
+                SessionOutcome::Invalidated,
+                now,
+            )?;
             let session = store.get_session(s.id)?.expect("appena risolta");
             events.push(PomodoroEvent::Invalidated { session });
         }

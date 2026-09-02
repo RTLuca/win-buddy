@@ -553,15 +553,24 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn resolve_session(&self, id: i64, outcome: SessionOutcome, now: i64) -> Result<()> {
-        self.conn.execute(
+    pub fn resolve_session(
+        &self,
+        id: i64,
+        expected_revision: i64,
+        outcome: SessionOutcome,
+        now: i64,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
             "UPDATE pomodoro_sessions
-             SET outcome = ?2,
-                 phase = 'closed', resolved_at = ?3,
+             SET outcome = ?3,
+                 phase = 'closed', resolved_at = ?4,
                  transition_revision = transition_revision + 1
-             WHERE id = ?1 AND outcome IS NULL",
-            params![id, outcome.as_str(), now],
+             WHERE id = ?1 AND transition_revision = ?2 AND outcome IS NULL",
+            params![id, expected_revision, outcome.as_str(), now],
         )?;
+        if changed != 1 {
+            return Err(session_already_updated());
+        }
         Ok(())
     }
 
@@ -750,6 +759,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_session_rejects_stale_revision_without_mutating() {
+        let s = store();
+        let started = s
+            .start_focus(StartSession::focus(1, "Spec", 25 * MIN), 0)
+            .unwrap();
+        s.set_phase(started.id, SessionPhase::Overtime, 0, 25 * MIN)
+            .unwrap();
+
+        let err = s
+            .resolve_session(started.id, 0, SessionOutcome::Completed, 30 * MIN)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoreError::InvalidState(ref message) if message == "sessione già aggiornata"
+        ));
+        let current = s.get_session(started.id).unwrap().unwrap();
+        assert_eq!(current.phase, SessionPhase::Overtime);
+        assert_eq!(current.outcome, None);
+        assert_eq!(current.resolved_at, None);
+        assert_eq!(current.transition_revision, 1);
+    }
+
+    #[test]
     fn finish_session_closes_and_caps_effective_time_at_resolution() {
         let s = store();
         let started = s
@@ -922,12 +955,24 @@ mod tests {
         assert!(sess.outcome.is_none());
         assert_eq!(s.open_sessions().unwrap().len(), 1);
 
-        s.resolve_session(sess.id, SessionOutcome::Completed, day + 25 * 60_000).unwrap();
+        s.resolve_session(
+            sess.id,
+            sess.transition_revision,
+            SessionOutcome::Completed,
+            day + 25 * 60_000,
+        )
+        .unwrap();
         assert!(s.open_sessions().unwrap().is_empty());
         assert_eq!(s.completed_focus_since(day).unwrap(), 1);
         // le invalidate non contano nelle statistiche
         let s2 = s.start_session(SessionKind::Focus, day + 1, day + 2, None).unwrap();
-        s.resolve_session(s2.id, SessionOutcome::Invalidated, day + 2).unwrap();
+        s.resolve_session(
+            s2.id,
+            s2.transition_revision,
+            SessionOutcome::Invalidated,
+            day + 2,
+        )
+        .unwrap();
         assert_eq!(s.completed_focus_since(day).unwrap(), 1);
         // ma restano nello storico
         assert_eq!(s.session_history(10).unwrap().len(), 2);
@@ -939,8 +984,22 @@ mod tests {
     fn resolve_session_only_once() {
         let s = store();
         let sess = s.start_session(SessionKind::Focus, 0, 100, None).unwrap();
-        s.resolve_session(sess.id, SessionOutcome::Aborted, 50).unwrap();
-        s.resolve_session(sess.id, SessionOutcome::Completed, 100).unwrap();
+        s.resolve_session(
+            sess.id,
+            sess.transition_revision,
+            SessionOutcome::Aborted,
+            50,
+        )
+        .unwrap();
+        let err = s
+            .resolve_session(
+                sess.id,
+                sess.transition_revision,
+                SessionOutcome::Completed,
+                100,
+            )
+            .unwrap_err();
+        assert!(matches!(err, CoreError::InvalidState(_)));
         let sess = s.get_session(sess.id).unwrap().unwrap();
         assert_eq!(sess.outcome, Some(SessionOutcome::Aborted));
     }
@@ -950,8 +1009,13 @@ mod tests {
         let s = store();
         let sess = s.start_session(SessionKind::Focus, 0, 100, None).unwrap();
 
-        s.resolve_session(sess.id, SessionOutcome::Completed, 100)
-            .unwrap();
+        s.resolve_session(
+            sess.id,
+            sess.transition_revision,
+            SessionOutcome::Completed,
+            100,
+        )
+        .unwrap();
 
         let revision: i64 = s
             .conn
