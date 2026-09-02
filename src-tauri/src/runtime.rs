@@ -7,9 +7,11 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use win_buddy_core::dnd::DndLevel;
-use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent};
+use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent, Recovery};
 use win_buddy_core::scheduler::{self, RESUME_GAP_MS, TICK_MS};
+use win_buddy_core::Store;
 
+use crate::commands;
 use crate::platform;
 use crate::presenter;
 use crate::state::{day_start_ms, now_ms, AppState};
@@ -100,12 +102,13 @@ pub fn do_tick(app: &AppHandle) {
     let state = app.state::<AppState>();
     state.last_tick.store(now, Ordering::Relaxed);
 
-    let (out, pomo_events) = {
+    let (out, pomo_events, focus_snapshot) = {
         let store = state.store.lock().unwrap();
         let out = scheduler::tick(&store, now);
-        if let Err(error) = pomodoro::tick(&store, now) {
+        let focus_snapshot = apply_pomodoro_tick(&store, now).unwrap_or_else(|error| {
             log::error!("tick Pomodoro fallito: {error}");
-        }
+            None
+        });
         let events = match store.pending_presentation_events() {
             Ok(events) => events,
             Err(error) => {
@@ -119,6 +122,7 @@ pub fn do_tick(app: &AppHandle) {
                 arm_timer_ms: None,
             }),
             events,
+            focus_snapshot,
         )
     };
 
@@ -130,6 +134,9 @@ pub fn do_tick(app: &AppHandle) {
     }
     arm_targeted_timer(app, now, out.arm_timer_ms);
     presenter::sync(app);
+    if let Some(status) = focus_snapshot.as_ref() {
+        commands::emit_focus_changed(app, status);
+    }
 }
 
 /// Recupero: sessioni aperte risolte con le regole del § 8.3, poi la stessa
@@ -140,12 +147,14 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
     state.last_tick.store(now, Ordering::Relaxed);
     state.last_beat.store(now, Ordering::Relaxed);
 
-    let (out, pomo_events) = {
+    let (out, pomo_events, focus_snapshot) = {
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        if let Err(error) = pomodoro::resolve_open(&store, now, last_alive, day_start_ms(), &cfg) {
-            log::error!("recupero Pomodoro fallito: {error}");
-        }
+        let focus_snapshot = apply_pomodoro_recovery(&store, now, last_alive, day_start_ms(), &cfg)
+            .unwrap_or_else(|error| {
+                log::error!("recupero Pomodoro fallito: {error}");
+                None
+            });
         let out = scheduler::tick(&store, now).unwrap_or_else(|_| scheduler::TickOutcome {
             newly_fired: vec![],
             arm_timer_ms: None,
@@ -157,7 +166,7 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
                 Vec::new()
             }
         };
-        (out, events)
+        (out, events, focus_snapshot)
     };
 
     handle_pomodoro_events(app, &pomo_events);
@@ -168,6 +177,35 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
     }
     arm_targeted_timer(app, now, out.arm_timer_ms);
     presenter::sync(app);
+    if let Some(status) = focus_snapshot.as_ref() {
+        commands::emit_focus_changed(app, status);
+    }
+}
+
+fn apply_pomodoro_tick(
+    store: &Store,
+    now: i64,
+) -> win_buddy_core::Result<Option<commands::FocusStatusDto>> {
+    let changed = !pomodoro::tick(store, now)?.is_empty();
+    changed
+        .then(|| commands::focus_status_from_store(store, now))
+        .transpose()
+}
+
+fn apply_pomodoro_recovery(
+    store: &Store,
+    now: i64,
+    last_alive: i64,
+    day_start: i64,
+    config: &PomodoroConfig,
+) -> win_buddy_core::Result<Option<commands::FocusStatusDto>> {
+    let before = store.open_session()?;
+    let recovery = pomodoro::resolve_open(store, now, last_alive, day_start, config)?;
+    let after = store.open_session()?;
+    let changed = before != after || matches!(recovery, Recovery::NeedsReview(_));
+    changed
+        .then(|| commands::focus_status_from_store(store, now))
+        .transpose()
 }
 
 fn handle_pomodoro_events(app: &AppHandle, events: &[PomodoroEvent]) {
@@ -299,5 +337,87 @@ mod tests {
 
         assert!(presented);
         assert_eq!(store.pending_presentation_events().unwrap(), vec![event]);
+    }
+
+    #[test]
+    fn focus_deadline_requests_one_focus_changed_snapshot() {
+        let store = Store::open_in_memory().unwrap();
+        let started = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap()
+            .session;
+
+        let snapshot =
+            serde_json::to_value(apply_pomodoro_tick(&store, MIN).unwrap().unwrap()).unwrap();
+        assert_eq!(snapshot["active"]["phase"], "ready_to_close");
+        assert_eq!(snapshot["transition_revision"], 1);
+        let ready = store.get_session(started.id).unwrap().unwrap();
+        assert_eq!(ready.phase, win_buddy_core::SessionPhase::ReadyToClose);
+        assert_eq!(ready.transition_revision, 1);
+        assert!(apply_pomodoro_tick(&store, MIN + 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_recovery_that_makes_focus_reviewable_requests_focus_changed() {
+        let store = Store::open_in_memory().unwrap();
+        let started = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap()
+            .session;
+        let cfg = PomodoroConfig::load(&store);
+
+        let snapshot = serde_json::to_value(
+            apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot["active"]["phase"], "ready_to_close");
+        assert_eq!(snapshot["transition_revision"], 1);
+
+        let recovered = store.get_session(started.id).unwrap().unwrap();
+        assert_eq!(recovered.phase, win_buddy_core::SessionPhase::ReadyToClose);
+        assert_eq!(recovered.transition_revision, 1);
+        assert_eq!(
+            store.pending_presentation_events().unwrap()[0].kind,
+            win_buddy_core::pomodoro::EventKind::RecoveryNeeded
+        );
+    }
+
+    #[test]
+    fn natural_break_deadline_requests_one_focus_changed_and_keeps_return_prompt() {
+        let store = Store::open_in_memory().unwrap();
+        pomodoro::start_break(&store, win_buddy_core::SessionKind::ShortBreak, MIN, 0).unwrap();
+
+        let snapshot =
+            serde_json::to_value(apply_pomodoro_tick(&store, MIN).unwrap().unwrap()).unwrap();
+        assert_eq!(snapshot["active"], serde_json::Value::Null);
+        assert_eq!(snapshot["transition_revision"], serde_json::Value::Null);
+        assert!(store.open_session().unwrap().is_none());
+        assert_eq!(
+            store.pending_presentation_events().unwrap()[0].kind,
+            win_buddy_core::pomodoro::EventKind::ReturnPrompt
+        );
+        assert!(apply_pomodoro_tick(&store, MIN + 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn recent_break_recovery_requests_focus_changed_when_it_closes_the_break() {
+        let store = Store::open_in_memory().unwrap();
+        pomodoro::start_break(&store, win_buddy_core::SessionKind::ShortBreak, MIN, 0).unwrap();
+        let cfg = PomodoroConfig::load(&store);
+
+        let snapshot = serde_json::to_value(
+            apply_pomodoro_recovery(&store, MIN + 1, MIN, 0, &cfg)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot["active"], serde_json::Value::Null);
+        assert_eq!(snapshot["transition_revision"], serde_json::Value::Null);
+
+        assert!(store.open_session().unwrap().is_none());
+        assert_eq!(
+            store.pending_presentation_events().unwrap()[0].kind,
+            win_buddy_core::pomodoro::EventKind::ReturnPrompt
+        );
     }
 }

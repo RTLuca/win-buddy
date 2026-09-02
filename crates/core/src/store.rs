@@ -176,7 +176,7 @@ fn enqueue_presentation_event(
 
 #[allow(dead_code)] // Primitive revisionale consumata dalla macchina a stati del core.
 fn session_already_updated() -> CoreError {
-    CoreError::InvalidState("sessione già aggiornata".into())
+    CoreError::StaleRevision
 }
 
 fn invalid_session_write(error: rusqlite::Error) -> CoreError {
@@ -789,6 +789,13 @@ impl Store {
             [id],
             |row| row.get(0),
         )?;
+        transaction.execute(
+            "UPDATE pomodoro_presentation_events
+             SET acknowledged_at = ?2
+             WHERE session_id = ?1 AND acknowledged_at IS NULL
+               AND transition_revision < ?3",
+            params![id, resolved_at, transition_revision],
+        )?;
         let event = event_kind
             .map(|kind| {
                 enqueue_presentation_event(&transaction, id, kind, transition_revision, resolved_at)
@@ -1222,9 +1229,7 @@ mod tests {
             .set_phase(started.id, SessionPhase::Paused, 0, 26 * MIN)
             .unwrap_err();
 
-        assert!(
-            matches!(err, CoreError::InvalidState(ref message) if message == "sessione già aggiornata")
-        );
+        assert!(matches!(err, CoreError::StaleRevision));
         let current = s.get_session(started.id).unwrap().unwrap();
         assert_eq!(current.phase, SessionPhase::Overtime);
         assert_eq!(current.transition_revision, 1);
@@ -1243,10 +1248,7 @@ mod tests {
             .resolve_session(started.id, 0, SessionOutcome::Completed, 30 * MIN)
             .unwrap_err();
 
-        assert!(matches!(
-            err,
-            CoreError::InvalidState(ref message) if message == "sessione già aggiornata"
-        ));
+        assert!(matches!(err, CoreError::StaleRevision));
         let current = s.get_session(started.id).unwrap().unwrap();
         assert_eq!(current.phase, SessionPhase::Overtime);
         assert_eq!(current.outcome, None);
@@ -1275,6 +1277,34 @@ mod tests {
             17 * MIN
         );
         assert!(s.open_session().unwrap().is_none());
+    }
+
+    #[test]
+    fn pending_event_ack_failure_rolls_back_session_finish() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_test_pending_event_ack
+                 BEFORE UPDATE OF acknowledged_at ON pomodoro_presentation_events
+                 WHEN NEW.acknowledged_at IS NOT NULL
+                 BEGIN SELECT RAISE(ABORT, 'forced event ack failure'); END;",
+            )
+            .unwrap();
+
+        let error = s
+            .finish_session(focus.id, 1, SessionOutcome::Completed, None, MIN + 1)
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::Db(_)));
+        let unchanged = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
+        assert_eq!(unchanged.outcome, None);
+        assert_eq!(unchanged.transition_revision, 1);
+        assert_eq!(s.pending_presentation_events().unwrap(), vec![event]);
     }
 
     #[test]
@@ -1386,7 +1416,7 @@ mod tests {
         assert_eq!(unchanged.transition_revision, 1);
         assert_eq!(
             s.pending_presentation_events().unwrap(),
-            vec![obsolete, current_event]
+            vec![current_event]
         );
     }
 
@@ -1607,7 +1637,7 @@ mod tests {
                 100,
             )
             .unwrap_err();
-        assert!(matches!(err, CoreError::InvalidState(_)));
+        assert!(matches!(err, CoreError::StaleRevision));
         let sess = s.get_session(sess.id).unwrap().unwrap();
         assert_eq!(sess.outcome, Some(SessionOutcome::Aborted));
     }

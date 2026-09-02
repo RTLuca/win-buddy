@@ -24,6 +24,8 @@ pub use store::Store;
 pub enum CoreError {
     #[error("database: {0}")]
     Db(#[from] rusqlite::Error),
+    #[error("stato non valido: sessione già aggiornata")]
+    StaleRevision,
     #[error("stato non valido: {0}")]
     InvalidState(String),
 }

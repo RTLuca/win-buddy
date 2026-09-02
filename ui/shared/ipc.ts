@@ -8,13 +8,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CapturePreview,
   DndStatus,
+  FocusFinishOutcome,
   FocusStatus,
   MonitorInfo,
   NoteView,
   OverlayBoot,
   PomodoroStatus,
   SessionKind,
-  SessionOutcome,
   StartSession,
 } from "./contracts";
 
@@ -55,7 +55,7 @@ export const focusAdjust = (deltaMs: number, expectedRevision: number) =>
 export const focusOvertime = (expectedRevision: number) =>
   invoke<FocusStatus>("focus_overtime", { expectedRevision });
 export const focusFinish = (
-  outcome: SessionOutcome,
+  outcome: FocusFinishOutcome,
   expectedRevision: number,
   interruptionReason?: string | null,
 ) =>

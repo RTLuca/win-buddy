@@ -11,7 +11,7 @@
 
 use std::sync::atomic::Ordering;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use win_buddy_core::events::{
     BubbleShow, HitBox, StateChanged, EVT_FOCUS_CHANGED, EVT_NOTES_CHANGED,
@@ -31,6 +31,7 @@ use crate::state::{
 use crate::surfaces;
 
 type CmdResult<T> = Result<T, String>;
+type FocusCmdResult<T> = Result<T, FocusCommandError>;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -95,6 +96,26 @@ pub enum FocusAction {
     SkipBreak,
 }
 
+/// Esiti che una scelta esplicita dell'utente può assegnare. `Invalidated`
+/// resta un esito persistente riservato alle politiche di recovery del core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FocusFinishOutcome {
+    Completed,
+    Partial,
+    Interrupted,
+}
+
+impl From<FocusFinishOutcome> for SessionOutcome {
+    fn from(outcome: FocusFinishOutcome) -> Self {
+        match outcome {
+            FocusFinishOutcome::Completed => Self::Completed,
+            FocusFinishOutcome::Partial => Self::Partial,
+            FocusFinishOutcome::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
 pub(crate) fn allowed_actions(phase: SessionPhase) -> Vec<FocusAction> {
     match phase {
         SessionPhase::Running => vec![
@@ -129,6 +150,23 @@ pub struct FocusStatusDto {
     transition_revision: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum FocusCommandError {
+    StaleRevision {
+        message: String,
+        current: Box<FocusStatusDto>,
+    },
+    InvalidRequest {
+        message: String,
+        current: Box<FocusStatusDto>,
+    },
+    Internal {
+        message: String,
+        current: Option<Box<FocusStatusDto>>,
+    },
+}
+
 fn session_actions(session: &PomodoroSession) -> Vec<FocusAction> {
     if session.kind == SessionKind::Focus {
         return allowed_actions(session.phase);
@@ -143,7 +181,10 @@ fn session_actions(session: &PomodoroSession) -> Vec<FocusAction> {
     }
 }
 
-fn focus_status_from_store(store: &Store, now: i64) -> win_buddy_core::Result<FocusStatusDto> {
+pub(crate) fn focus_status_from_store(
+    store: &Store,
+    now: i64,
+) -> win_buddy_core::Result<FocusStatusDto> {
     let active = pomodoro::active_session(store, now)?;
     let effective_focus_ms = match active.as_ref() {
         Some(session) if session.kind == SessionKind::Focus => {
@@ -186,18 +227,60 @@ fn focus_status_from_store(store: &Store, now: i64) -> win_buddy_core::Result<Fo
     })
 }
 
-fn focus_status_dto(app: &AppHandle) -> CmdResult<FocusStatusDto> {
-    let state = app.state::<AppState>();
-    let store = state.store.lock().unwrap();
-    focus_status_from_store(&store, now_ms()).map_err(err)
+fn focus_command_error_from_store(
+    store: &Store,
+    now: i64,
+    error: win_buddy_core::CoreError,
+) -> FocusCommandError {
+    let message = error.to_string();
+    let current = match focus_status_from_store(store, now) {
+        Ok(current) => current,
+        Err(snapshot_error) => {
+            return FocusCommandError::Internal {
+                message: format!("{message}; lettura snapshot fallita: {snapshot_error}"),
+                current: None,
+            };
+        }
+    };
+    match error {
+        win_buddy_core::CoreError::StaleRevision => FocusCommandError::StaleRevision {
+            message,
+            current: Box::new(current),
+        },
+        win_buddy_core::CoreError::InvalidState(_) => FocusCommandError::InvalidRequest {
+            message,
+            current: Box::new(current),
+        },
+        win_buddy_core::CoreError::Db(_) => FocusCommandError::Internal {
+            message,
+            current: Some(Box::new(current)),
+        },
+    }
 }
 
-fn sync_and_emit_focus_changed(app: &AppHandle) -> CmdResult<FocusStatusDto> {
-    presenter::sync(app);
-    let status = focus_status_dto(app)?;
-    if let Err(error) = app.emit(EVT_FOCUS_CHANGED, &status) {
+fn focus_internal_error(error: win_buddy_core::CoreError) -> FocusCommandError {
+    FocusCommandError::Internal {
+        message: error.to_string(),
+        current: None,
+    }
+}
+
+fn focus_status_dto(app: &AppHandle) -> win_buddy_core::Result<FocusStatusDto> {
+    let state = app.state::<AppState>();
+    let store = state.store.lock().unwrap();
+    focus_status_from_store(&store, now_ms())
+}
+
+pub(crate) fn emit_focus_changed(app: &AppHandle, status: &FocusStatusDto) {
+    if let Err(error) = app.emit(EVT_FOCUS_CHANGED, status) {
         log::warn!("emissione {EVT_FOCUS_CHANGED} fallita: {error}");
     }
+}
+
+fn sync_and_emit_focus_changed(app: &AppHandle) -> win_buddy_core::Result<FocusStatusDto> {
+    let status = focus_status_dto(app)?;
+    presenter::sync(app);
+    emit_focus_changed(app, &status);
     Ok(status)
 }
 
@@ -285,14 +368,19 @@ fn apply_legacy_abort(store: &Store, now: i64) -> win_buddy_core::Result<()> {
     Ok(())
 }
 
-fn do_focus_mutation(app: &AppHandle, mutation: FocusMutation<'_>) -> CmdResult<FocusStatusDto> {
-    touch(app);
+fn do_focus_mutation(
+    app: &AppHandle,
+    mutation: FocusMutation<'_>,
+) -> FocusCmdResult<FocusStatusDto> {
+    let now = now_ms();
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_focus_mutation(&store, mutation, now_ms()).map_err(err)?;
+        apply_focus_mutation(&store, mutation, now)
+            .map_err(|error| focus_command_error_from_store(&store, now, error))?;
     }
-    sync_and_emit_focus_changed(app)
+    touch(app);
+    sync_and_emit_focus_changed(app).map_err(focus_internal_error)
 }
 
 #[derive(Serialize)]
@@ -502,14 +590,16 @@ pub async fn note_snooze(app: AppHandle, id: i64, minutes: i64) -> CmdResult<()>
 // ---------------------------------------------------------------- pomodoro
 
 #[tauri::command]
-pub async fn focus_start(app: AppHandle, request: StartSession) -> CmdResult<FocusStatusDto> {
-    touch(&app);
+pub async fn focus_start(app: AppHandle, request: StartSession) -> FocusCmdResult<FocusStatusDto> {
+    let now = now_ms();
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_focus_start(&store, request, now_ms()).map_err(err)?;
+        apply_focus_start(&store, request, now)
+            .map_err(|error| focus_command_error_from_store(&store, now, error))?;
     }
-    sync_and_emit_focus_changed(&app)
+    touch(&app);
+    sync_and_emit_focus_changed(&app).map_err(focus_internal_error)
 }
 
 #[tauri::command]
@@ -517,7 +607,7 @@ pub async fn focus_pause(
     app: AppHandle,
     expected_revision: i64,
     reason: Option<String>,
-) -> CmdResult<FocusStatusDto> {
+) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(
         &app,
         FocusMutation::Pause {
@@ -528,7 +618,10 @@ pub async fn focus_pause(
 }
 
 #[tauri::command]
-pub async fn focus_resume(app: AppHandle, expected_revision: i64) -> CmdResult<FocusStatusDto> {
+pub async fn focus_resume(
+    app: AppHandle,
+    expected_revision: i64,
+) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(&app, FocusMutation::Resume { expected_revision })
 }
 
@@ -537,7 +630,7 @@ pub async fn focus_adjust(
     app: AppHandle,
     delta_ms: i64,
     expected_revision: i64,
-) -> CmdResult<FocusStatusDto> {
+) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(
         &app,
         FocusMutation::Adjust {
@@ -548,7 +641,10 @@ pub async fn focus_adjust(
 }
 
 #[tauri::command]
-pub async fn focus_overtime(app: AppHandle, expected_revision: i64) -> CmdResult<FocusStatusDto> {
+pub async fn focus_overtime(
+    app: AppHandle,
+    expected_revision: i64,
+) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(&app, FocusMutation::Overtime { expected_revision })
 }
 
@@ -556,22 +652,22 @@ pub async fn focus_overtime(app: AppHandle, expected_revision: i64) -> CmdResult
 pub async fn focus_finish(
     app: AppHandle,
     expected_revision: i64,
-    outcome: SessionOutcome,
+    outcome: FocusFinishOutcome,
     interruption_reason: Option<String>,
-) -> CmdResult<FocusStatusDto> {
+) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(
         &app,
         FocusMutation::Finish {
             expected_revision,
-            outcome,
+            outcome: outcome.into(),
             interruption_reason: interruption_reason.as_deref(),
         },
     )
 }
 
 #[tauri::command]
-pub fn focus_status(app: AppHandle) -> CmdResult<FocusStatusDto> {
-    focus_status_dto(&app)
+pub fn focus_status(app: AppHandle) -> FocusCmdResult<FocusStatusDto> {
+    focus_status_dto(&app).map_err(focus_internal_error)
 }
 
 pub fn do_pomodoro_start(
@@ -597,7 +693,7 @@ pub fn do_pomodoro_start(
             pomodoro::start_break(&store, kind, cfg.duration_ms(kind), now).map_err(err)?;
         }
     }
-    let _ = sync_and_emit_focus_changed(app)?;
+    let _ = sync_and_emit_focus_changed(app).map_err(err)?;
     pomodoro_status_dto(app)
 }
 
@@ -608,7 +704,7 @@ pub fn do_pomodoro_abort(app: &AppHandle) -> CmdResult<PomodoroStatusDto> {
         let store = state.store.lock().unwrap();
         apply_legacy_abort(&store, now_ms()).map_err(err)?;
     }
-    let _ = sync_and_emit_focus_changed(app)?;
+    let _ = sync_and_emit_focus_changed(app).map_err(err)?;
     pomodoro_status_dto(app)
 }
 
@@ -693,7 +789,7 @@ pub async fn break_accept(app: AppHandle, event_id: i64) -> CmdResult<PomodoroSt
         )
         .map_err(err)?;
     }
-    let _ = sync_and_emit_focus_changed(&app)?;
+    let _ = sync_and_emit_focus_changed(&app).map_err(err)?;
     pomodoro_status_dto(&app)
 }
 
@@ -712,7 +808,7 @@ pub async fn break_skip(app: AppHandle, event_id: i64) -> CmdResult<PomodoroStat
         )
         .map_err(err)?;
     }
-    let _ = sync_and_emit_focus_changed(&app)?;
+    let _ = sync_and_emit_focus_changed(&app).map_err(err)?;
     pomodoro_status_dto(&app)
 }
 
@@ -1034,6 +1130,26 @@ mod tests {
     }
 
     #[test]
+    fn focus_finish_outcome_rejects_recovery_only_invalidated() {
+        let cases = [
+            ("\"completed\"", FocusFinishOutcome::Completed),
+            ("\"partial\"", FocusFinishOutcome::Partial),
+            ("\"interrupted\"", FocusFinishOutcome::Interrupted),
+        ];
+
+        for (json, expected) in cases {
+            let outcome: FocusFinishOutcome = serde_json::from_str(json).unwrap();
+            assert_eq!(outcome, expected);
+            assert_eq!(serde_json::to_string(&outcome).unwrap(), json);
+            assert_eq!(
+                SessionOutcome::from(outcome).as_str(),
+                json.trim_matches('"')
+            );
+        }
+        assert!(serde_json::from_str::<FocusFinishOutcome>("\"invalidated\"").is_err());
+    }
+
+    #[test]
     fn idle_focus_status_serializes_the_exact_contract() {
         let store = Store::open_in_memory().unwrap();
 
@@ -1149,13 +1265,40 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "stato non valido: sessione già aggiornata"
-        );
+        assert!(matches!(error, win_buddy_core::CoreError::StaleRevision));
+        let payload =
+            serde_json::to_value(focus_command_error_from_store(&store, 5 * MIN, error)).unwrap();
+        assert_eq!(payload["code"], "stale_revision");
+        assert_eq!(payload["current"]["transition_revision"], 0);
+        assert_eq!(payload["current"]["active"]["id"], started.session.id);
+        assert_eq!(payload["current"]["active"]["phase"], "running");
         assert_eq!(
             store.get_session(started.session.id).unwrap().unwrap(),
             before
+        );
+    }
+
+    #[test]
+    fn invalid_focus_request_has_a_distinct_code_and_current_snapshot() {
+        let store = Store::open_in_memory().unwrap();
+        let error = apply_focus_mutation(
+            &store,
+            FocusMutation::Pause {
+                expected_revision: 0,
+                reason: None,
+            },
+            5 * MIN,
+        )
+        .unwrap_err();
+
+        let payload =
+            serde_json::to_value(focus_command_error_from_store(&store, 5 * MIN, error)).unwrap();
+
+        assert_eq!(payload["code"], "invalid_request");
+        assert_eq!(payload["current"]["active"], serde_json::Value::Null);
+        assert_eq!(
+            payload["current"]["transition_revision"],
+            serde_json::Value::Null
         );
     }
 

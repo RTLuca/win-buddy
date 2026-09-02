@@ -109,7 +109,7 @@ fn get_session(store: &Store, id: i64) -> Result<PomodoroSession> {
 fn command_session(store: &Store, id: i64, expected_revision: i64) -> Result<PomodoroSession> {
     let session = get_session(store, id)?;
     if session.transition_revision != expected_revision {
-        return Err(CoreError::InvalidState("sessione già aggiornata".into()));
+        return Err(CoreError::StaleRevision);
     }
     Ok(session)
 }
@@ -559,6 +559,17 @@ mod tests {
     }
 
     #[test]
+    fn normal_finish_consumes_the_pending_ready_event() {
+        let s = setup();
+        let focus = start(&s, request(MIN), 0).unwrap().session;
+        tick(&s, MIN).unwrap();
+
+        finish(&s, focus.id, 1, SessionOutcome::Completed, None, MIN + 1).unwrap();
+
+        assert!(s.pending_presentation_events().unwrap().is_empty());
+    }
+
+    #[test]
     fn accepting_ready_focus_event_atomically_starts_the_proposed_break() {
         let s = setup();
         let focus = start(&s, request(MIN), 0).unwrap().session;
@@ -728,15 +739,29 @@ mod tests {
     }
 
     #[test]
+    fn natural_break_finish_consumes_old_events_but_keeps_its_new_return_prompt() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, MIN, 0)
+            .unwrap()
+            .session;
+        s.enqueue_current_presentation_event(break_session.id, 0, EventKind::Prewarning, MIN / 2)
+            .unwrap();
+
+        let returned = tick(&s, MIN).unwrap().remove(0);
+        let pending = s.pending_presentation_events().unwrap();
+
+        assert_eq!(pending, vec![returned.clone()]);
+        assert_eq!(returned.kind, EventKind::ReturnPrompt);
+        assert_eq!(returned.transition_revision, 1);
+    }
+
+    #[test]
     fn stale_commands_do_not_mutate_the_session() {
         let s = setup();
         let active = start(&s, request(25 * MIN), 0).unwrap().session;
         let err = pause(&s, active.id, 1, 10 * MIN, None).unwrap_err();
 
-        assert!(matches!(
-            err,
-            CoreError::InvalidState(ref message) if message == "sessione già aggiornata"
-        ));
+        assert!(matches!(err, CoreError::StaleRevision));
         let current = s.get_session(active.id).unwrap().unwrap();
         assert_eq!(current.phase, SessionPhase::Running);
         assert_eq!(current.transition_revision, 0);
@@ -848,10 +873,7 @@ mod tests {
         assert_eq!(adjusted.session.deadline_at, 10 * MIN);
         assert_eq!(adjusted.session.phase, SessionPhase::ReadyToClose);
         let err = adjust_duration(&s, active.id, 0, MIN, 10 * MIN).unwrap_err();
-        assert!(matches!(
-            err,
-            CoreError::InvalidState(ref message) if message == "sessione già aggiornata"
-        ));
+        assert!(matches!(err, CoreError::StaleRevision));
         assert_eq!(
             s.get_session(active.id).unwrap().unwrap().deadline_at,
             10 * MIN

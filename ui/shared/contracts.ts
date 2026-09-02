@@ -144,6 +144,8 @@ export interface CapturePreview {
 export type SessionKind = "focus" | "short_break" | "long_break";
 export type SessionPhase = ActiveSessionPhase | "closed";
 export type SessionOutcome = "completed" | "partial" | "interrupted" | "invalidated";
+/** Esiti assegnabili da una chiusura esplicita; `invalidated` appartiene al recovery. */
+export type FocusFinishOutcome = "completed" | "partial" | "interrupted";
 export type FocusAction =
   | "focus.start_last"
   | "focus.pause"
@@ -213,6 +215,11 @@ export interface FocusStatus {
   pending_captures: number;
   transition_revision: number | null;
 }
+
+export type FocusCommandError =
+  | { code: "stale_revision"; message: string; current: FocusStatus }
+  | { code: "invalid_request"; message: string; current: FocusStatus }
+  | { code: "internal"; message: string; current: FocusStatus | null };
 
 /** Contratto legacy conservato soltanto durante il piano Buddy/Surfaces. */
 export interface PomodoroStatus {
