@@ -1,0 +1,425 @@
+<style>
+  #hover-states {
+    --hs-bg: light-dark(#f2eef7, #15121d);
+    --hs-panel: light-dark(#fffdfd, #221e2c);
+    --hs-panel-2: light-dark(#ece6f2, #302a3d);
+    --hs-line: light-dark(#d8cfe1, #4a405b);
+    --hs-text: light-dark(#251e2f, #f4eefb);
+    --hs-muted: light-dark(#716779, #bdb3c8);
+    --hs-purple: light-dark(#7660a6, #bba5ec);
+    --hs-green: light-dark(#3d836c, #64bc98);
+    --hs-blue: light-dark(#4f87a5, #86c7e9);
+    --hs-amber: light-dark(#a87422, #edbd67);
+    color: var(--hs-text);
+  }
+  #hover-states .phase-switcher {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin: 18px 0 12px;
+  }
+  #hover-states .phase-btn {
+    padding: 7px 11px;
+    border: 1px solid var(--hs-line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--hs-muted);
+    cursor: pointer;
+  }
+  #hover-states .phase-btn[aria-pressed="true"] {
+    border-color: var(--hs-text);
+    background: var(--hs-text);
+    color: var(--hs-panel);
+  }
+  #hover-states .desktop {
+    position: relative;
+    min-height: 430px;
+    border-radius: 17px;
+    background:
+      radial-gradient(circle at 78% 18%, color-mix(in srgb, var(--hs-purple) 15%, transparent), transparent 28%),
+      linear-gradient(145deg, color-mix(in srgb, var(--hs-purple) 10%, var(--hs-bg)), var(--hs-bg));
+    overflow: hidden;
+  }
+  #hover-states .work-window {
+    position: absolute;
+    inset: 34px 70px 40px 35px;
+    border-radius: 14px;
+    background: var(--hs-panel);
+    box-shadow: 0 22px 50px color-mix(in srgb, var(--hs-text) 11%, transparent);
+    opacity: .88;
+  }
+  #hover-states .work-top {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 38px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--hs-line);
+  }
+  #hover-states .work-top span {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--hs-panel-2);
+  }
+  #hover-states .work-copy {
+    display: grid;
+    gap: 13px;
+    padding: 28px 34px;
+  }
+  #hover-states .work-copy span {
+    height: 8px;
+    border-radius: 5px;
+    background: var(--hs-panel-2);
+  }
+  #hover-states .work-copy span:nth-child(2) { width: 82%; }
+  #hover-states .work-copy span:nth-child(3) { width: 91%; }
+  #hover-states .work-copy span:nth-child(4) { width: 62%; }
+  #hover-states .phase-note {
+    position: absolute;
+    top: 50px;
+    right: 86px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--hs-panel) 91%, transparent);
+    color: var(--hs-muted);
+    box-shadow: 0 9px 25px color-mix(in srgb, var(--hs-text) 9%, transparent);
+    font-size: 10px;
+  }
+  #hover-states .buddy-zone {
+    position: absolute;
+    right: 20px;
+    bottom: 16px;
+    width: 290px;
+    height: 165px;
+  }
+  #hover-states .creature {
+    position: absolute;
+    right: 19px;
+    bottom: 25px;
+    width: 65px;
+    height: 74px;
+    border-radius: 48% 52% 42% 45%;
+    background: var(--hs-purple);
+    box-shadow: 0 15px 28px color-mix(in srgb, var(--hs-text) 22%, transparent);
+    transition: transform 180ms ease;
+  }
+  #hover-states .buddy-zone:hover .creature { transform: translateY(-2px); }
+  #hover-states .creature::before,
+  #hover-states .creature::after {
+    content: "";
+    position: absolute;
+    top: -13px;
+    width: 22px;
+    height: 31px;
+    border-radius: 70% 20% 60% 30%;
+    background: var(--hs-purple);
+  }
+  #hover-states .creature::before { left: 4px; transform: rotate(-22deg); }
+  #hover-states .creature::after { right: 4px; transform: scaleX(-1) rotate(-22deg); }
+  #hover-states .eye {
+    position: absolute;
+    top: 28px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--hs-panel);
+  }
+  #hover-states .eye.left { left: 20px; }
+  #hover-states .eye.right { right: 20px; }
+  #hover-states .status-light {
+    position: absolute;
+    left: 26px;
+    bottom: 13px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--phase-color);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--phase-color) 22%, transparent);
+  }
+  #hover-states .rest-pill {
+    position: absolute;
+    right: 22px;
+    bottom: 10px;
+    min-width: 56px;
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: var(--hs-panel);
+    color: var(--phase-color);
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--hs-text) 16%, transparent);
+    text-align: center;
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  #hover-states .hover-card {
+    position: absolute;
+    right: 94px;
+    bottom: 28px;
+    width: 182px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--hs-panel);
+    box-shadow: 0 16px 34px color-mix(in srgb, var(--hs-text) 20%, transparent);
+    opacity: 0;
+    transform: translateX(8px);
+    pointer-events: none;
+    transition: opacity 150ms ease, transform 150ms ease;
+  }
+  #hover-states .buddy-zone:hover .hover-card,
+  #hover-states .buddy-zone:focus-within .hover-card {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+  #hover-states .hover-state {
+    margin-bottom: 3px;
+    color: var(--phase-color);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+  #hover-states .hover-intent {
+    margin-bottom: 9px;
+    color: var(--hs-text);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #hover-states .hover-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  #hover-states .hover-actions button,
+  #hover-states .prompt-actions button {
+    min-height: 30px;
+    padding: 6px 7px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--hs-panel-2);
+    color: var(--hs-text);
+    font-size: 9px;
+    cursor: pointer;
+  }
+  #hover-states .hover-actions button.primary,
+  #hover-states .prompt-actions button.primary {
+    background: var(--hs-text);
+    color: var(--hs-panel);
+  }
+  #hover-states .end-prompt {
+    position: absolute;
+    right: 100px;
+    bottom: 34px;
+    width: 212px;
+    padding: 13px;
+    border-radius: 14px 14px 4px 14px;
+    background: var(--hs-panel);
+    box-shadow: 0 17px 38px color-mix(in srgb, var(--hs-text) 22%, transparent);
+  }
+  #hover-states .end-prompt .kicker {
+    color: var(--hs-green);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+  #hover-states .end-prompt strong {
+    display: block;
+    margin: 5px 0 3px;
+    font-size: 14px;
+  }
+  #hover-states .end-prompt p {
+    margin: 0 0 10px;
+    color: var(--hs-muted);
+    font-size: 10px;
+  }
+  #hover-states .prompt-actions {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr 1fr;
+    gap: 6px;
+  }
+  #hover-states .capture {
+    position: absolute;
+    left: 80px;
+    right: 155px;
+    bottom: 47px;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 11px;
+    border-radius: 10px;
+    background: var(--hs-panel);
+    box-shadow: 0 15px 34px color-mix(in srgb, var(--hs-text) 18%, transparent);
+  }
+  #hover-states .capture.visible { display: flex; }
+  #hover-states .capture span { color: var(--hs-muted); font-size: 10px; }
+  #hover-states .capture input {
+    min-width: 0;
+    flex: 1;
+    padding: 6px 7px;
+    border: 1px solid var(--hs-line);
+    border-radius: 7px;
+    background: var(--hs-bg);
+    color: var(--hs-text);
+  }
+  #hover-states .capture button {
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--hs-text);
+    color: var(--hs-panel);
+    cursor: pointer;
+  }
+  #hover-states .decision {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+  }
+  #hover-states .decision-option {
+    padding: 13px 14px;
+    border: 1px solid var(--hs-line);
+    border-radius: 12px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  #hover-states .decision-option:hover { border-color: var(--hs-purple); }
+  #hover-states .decision-option.is-selected {
+    border-color: var(--hs-purple);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--hs-purple) 23%, transparent);
+  }
+  #hover-states .decision-option strong { display: block; margin-bottom: 4px; }
+  #hover-states .decision-option span { color: var(--hs-muted); font-size: 11px; }
+  #hover-states .decision-option.recommended strong::after {
+    content: "Raccomandato";
+    float: right;
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--hs-green) 18%, var(--hs-panel));
+    color: var(--hs-green);
+    font-size: 9px;
+    font-weight: 500;
+  }
+  @media (max-width: 700px) {
+    #hover-states .desktop { min-height: 390px; }
+    #hover-states .work-window { inset: 28px 24px 120px; }
+    #hover-states .phase-note { left: 38px; right: auto; }
+    #hover-states .capture { left: 24px; right: 105px; }
+    #hover-states .decision { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #hover-states .creature,
+    #hover-states .hover-card { transition: none; }
+  }
+</style>
+
+<div id="hover-states">
+  <h2>Buddy-first con controlli solo al passaggio</h2>
+  <p class="subtitle">Cambia fase e passa il puntatore sul buddy. La pillola mostra solo lo stato essenziale.</p>
+
+  <div class="phase-switcher" aria-label="Fase da simulare">
+    <button class="phase-btn" type="button" data-phase="idle" aria-pressed="false">Idle</button>
+    <button class="phase-btn" type="button" data-phase="focus" aria-pressed="true">Focus</button>
+    <button class="phase-btn" type="button" data-phase="paused" aria-pressed="false">In pausa</button>
+    <button class="phase-btn" type="button" data-phase="break" aria-pressed="false">Pausa breve</button>
+    <button class="phase-btn" type="button" data-phase="ended" aria-pressed="false">Focus concluso</button>
+  </div>
+
+  <div class="desktop" aria-live="polite">
+    <div class="work-window"><div class="work-top"><span></span><span></span><span></span></div><div class="work-copy"><span></span><span></span><span></span><span></span></div></div>
+    <div class="phase-note">Passa il puntatore sul buddy →</div>
+    <div class="capture" id="hs-capture"><span>Cattura</span><input aria-label="Testo della distrazione" placeholder="Scrivi e torna al lavoro…"><button type="button">Salva</button></div>
+    <div class="buddy-zone" id="hs-buddy-zone" style="--phase-color: var(--hs-green)">
+      <div class="hover-card" id="hs-hover-card">
+        <div class="hover-state" id="hs-hover-state">Focus · 3° ciclo</div>
+        <div class="hover-intent" id="hs-hover-intent">Chiudere la struttura del report</div>
+        <div class="hover-actions" id="hs-hover-actions"></div>
+      </div>
+      <div class="end-prompt" id="hs-end-prompt" hidden>
+        <span class="kicker">Focus completato</span>
+        <strong>Ottimo punto di chiusura.</strong>
+        <p>2 catture ti aspettano. Vuoi fare una pausa?</p>
+        <div class="prompt-actions"><button class="primary" type="button">Pausa 5 min</button><button type="button">Continua</button><button type="button">Chiudi</button></div>
+      </div>
+      <div class="creature"><span class="eye left"></span><span class="eye right"></span><span class="status-light"></span></div>
+      <div class="rest-pill" id="hs-rest-pill">18:42</div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <button class="decision-option recommended" type="button" data-choice="prompt-automatico" onclick="toggleSelect(this)">
+      <strong>A · Prompt automatico solo agli snodi</strong>
+      <span>I controlli comuni restano su hover; conclusione, errore e promemoria urgente possono aprire la nuvoletta.</span>
+    </button>
+    <button class="decision-option" type="button" data-choice="tutto-su-hover" onclick="toggleSelect(this)">
+      <strong>B · Tutto solo su hover</strong>
+      <span>Alla scadenza il buddy cambia stato e lampeggia; le scelte appaiono soltanto quando lo raggiungi.</span>
+    </button>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const root = document.getElementById('hover-states');
+    const pill = root.querySelector('#hs-rest-pill');
+    const zone = root.querySelector('#hs-buddy-zone');
+    const hoverState = root.querySelector('#hs-hover-state');
+    const hoverIntent = root.querySelector('#hs-hover-intent');
+    const actions = root.querySelector('#hs-hover-actions');
+    const endPrompt = root.querySelector('#hs-end-prompt');
+    const capture = root.querySelector('#hs-capture');
+
+    const phases = {
+      idle: {
+        color: 'var(--hs-purple)', pill: 'Pronto', state: 'Pronto', intent: 'Che cosa vuoi chiudere?',
+        actions: [['Avvia focus', 'primary'], ['Pausa libera', ''], ['Apri pannello', '']]
+      },
+      focus: {
+        color: 'var(--hs-green)', pill: '18:42', state: 'Focus · 3° ciclo', intent: 'Chiudere la struttura del report',
+        actions: [['Pausa', 'primary'], ['+5 min', ''], ['Cattura', 'capture'], ['Concludi', '']]
+      },
+      paused: {
+        color: 'var(--hs-amber)', pill: 'In pausa', state: 'Sessione sospesa', intent: '18:42 di focus rimanenti',
+        actions: [['Riprendi', 'primary'], ['Concludi', ''], ['Interrompi', '']]
+      },
+      break: {
+        color: 'var(--hs-blue)', pill: '03:18', state: 'Pausa breve', intent: 'Al ritorno: definire le priorità',
+        actions: [['Riprendi', 'primary'], ['+5 min', ''], ['Salta pausa', '']]
+      },
+      ended: {
+        color: 'var(--hs-green)', pill: 'Fatto', state: 'Focus completato', intent: 'Chiudere la struttura del report', actions: []
+      }
+    };
+
+    function renderPhase(name) {
+      const phase = phases[name];
+      zone.style.setProperty('--phase-color', phase.color);
+      pill.textContent = phase.pill;
+      hoverState.textContent = phase.state;
+      hoverIntent.textContent = phase.intent;
+      actions.replaceChildren();
+      phase.actions.forEach(([label, kind]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        if (kind === 'primary') button.className = 'primary';
+        if (kind === 'capture') button.addEventListener('click', () => capture.classList.toggle('visible'));
+        actions.append(button);
+      });
+      endPrompt.hidden = name !== 'ended';
+      capture.classList.remove('visible');
+      root.querySelectorAll('.phase-btn').forEach((button) => {
+        button.setAttribute('aria-pressed', String(button.dataset.phase === name));
+      });
+    }
+
+    root.querySelectorAll('.phase-btn').forEach((button) => {
+      button.addEventListener('click', () => renderPhase(button.dataset.phase));
+    });
+    root.querySelector('#hs-capture button').addEventListener('click', () => capture.classList.remove('visible'));
+    renderPhase('focus');
+  })();
+</script>

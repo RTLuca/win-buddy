@@ -231,6 +231,8 @@ const setScale = document.getElementById("setScale") as HTMLInputElement;
 const scaleVal = document.getElementById("scaleVal") as HTMLSpanElement;
 const setMonitor = document.getElementById("setMonitor") as HTMLSelectElement;
 const setCorner = document.getElementById("setCorner") as HTMLSelectElement;
+const resetPosition = document.getElementById("resetPosition") as HTMLButtonElement;
+const positionResetStatus = document.getElementById("positionResetStatus")!;
 const setAutoDnd = document.getElementById("setAutoDnd") as HTMLInputElement;
 const setIdleSleep = document.getElementById("setIdleSleep") as HTMLInputElement;
 const setFocus = document.getElementById("setFocus") as HTMLInputElement;
@@ -276,7 +278,8 @@ async function renderSettings(): Promise<void> {
   setLong.value = s["pomodoro.long_min"] ?? "20";
   setEvery.value = s["pomodoro.long_every"] ?? "4";
 
-  // schermi disponibili: «principale» più gli altri per indice
+  // Il nome dispositivo è stabile tra riavvii; gli indici restano solo per
+  // migrare le impostazioni scritte dalle versioni precedenti.
   try {
     const monitors = await ipc.monitorsList();
     setMonitor.replaceChildren();
@@ -286,11 +289,16 @@ async function renderSettings(): Promise<void> {
     setMonitor.append(def);
     for (const m of monitors) {
       const o = document.createElement("option");
-      o.value = String(m.index);
+      o.value = `name:${m.id}`;
       o.textContent = `${m.name} · ${m.width}×${m.height}${m.primary ? " (principale)" : ""}`;
       setMonitor.append(o);
     }
-    setMonitor.value = s["overlay.monitor"] ?? "primary";
+    const savedMonitor = s["overlay.monitor"] ?? "primary";
+    const legacyIndex = /^\d+$/.test(savedMonitor) ? Number(savedMonitor) : null;
+    setMonitor.value =
+      legacyIndex !== null && monitors[legacyIndex]
+        ? `name:${monitors[legacyIndex].id}`
+        : savedMonitor;
     if (setMonitor.selectedIndex < 0) setMonitor.value = "primary";
   } catch {
     setMonitor.replaceChildren();
@@ -316,6 +324,20 @@ function bindSetting(el: HTMLInputElement | HTMLSelectElement, key: string): voi
 bindSetting(setSober, "buddy.mode");
 bindSetting(setCorner, "buddy.corner");
 bindSetting(setMonitor, "overlay.monitor");
+resetPosition.addEventListener("click", async () => {
+  resetPosition.disabled = true;
+  positionResetStatus.classList.remove("error");
+  positionResetStatus.textContent = "Ripristino…";
+  try {
+    await ipc.overlayPositionReset();
+    positionResetStatus.textContent = "Fatto";
+  } catch {
+    positionResetStatus.classList.add("error");
+    positionResetStatus.textContent = "Errore";
+  } finally {
+    resetPosition.disabled = false;
+  }
+});
 setScale.addEventListener("input", () => {
   scaleVal.textContent = `${setScale.value}%`;
 });

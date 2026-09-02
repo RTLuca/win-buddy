@@ -95,6 +95,7 @@ pub struct OverlayBoot {
 #[derive(Serialize)]
 pub struct MonitorInfo {
     index: usize,
+    id: String,
     name: String,
     width: u32,
     height: u32,
@@ -348,14 +349,26 @@ pub fn settings_all(state: State<AppState>) -> CmdResult<std::collections::HashM
 
 pub fn do_setting_set(app: &AppHandle, key: &str, value: &str) -> CmdResult<()> {
     touch(app);
+    if matches!(key, "buddy.corner" | "overlay.monitor") {
+        surfaces::cancel_overlay_drag(app);
+    }
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        store.set_setting(key, value).map_err(err)?;
+        if key == "buddy.corner" {
+            store
+                .set_settings(&[
+                    ("buddy.corner", value),
+                    ("overlay.position.mode", "corner"),
+                ])
+                .map_err(err)?;
+        } else {
+            store.set_setting(key, value).map_err(err)?;
+        }
     }
     match key {
         "buddy.corner" | "overlay.scale" | "overlay.monitor" => {
-            surfaces::apply_overlay_layout(app);
+            surfaces::apply_overlay_layout(app)?;
         }
         _ => {}
     }
@@ -418,6 +431,7 @@ pub fn monitors_list(app: AppHandle) -> CmdResult<Vec<MonitorInfo>> {
         .enumerate()
         .map(|(index, m)| MonitorInfo {
             index,
+            id: surfaces::monitor_id(m),
             name: m
                 .name()
                 .map(|n| n.trim_start_matches("\\\\.\\").to_string())
@@ -434,6 +448,24 @@ pub fn monitors_list(app: AppHandle) -> CmdResult<Vec<MonitorInfo>> {
 #[tauri::command]
 pub fn hittest_update(state: State<AppState>, x: f64, y: f64, w: f64, h: f64) {
     *state.hitbox.lock().unwrap() = Some(HitBox { x, y, w, h });
+}
+
+#[tauri::command]
+pub fn overlay_drag_start(app: AppHandle) -> CmdResult<()> {
+    touch(&app);
+    surfaces::start_overlay_drag(&app)
+}
+
+#[tauri::command]
+pub fn overlay_position_reset(app: AppHandle) -> CmdResult<()> {
+    touch(&app);
+    surfaces::reset_overlay_position(&app)
+}
+
+#[tauri::command]
+pub fn overlay_position_nudge(app: AppHandle, x: i32, y: i32) -> CmdResult<()> {
+    touch(&app);
+    surfaces::nudge_overlay_position(&app, x.clamp(-1, 1) * 10, y.clamp(-1, 1) * 10)
 }
 
 /// La superficie è pronta. Per l'overlay risponde con lo stato iniziale

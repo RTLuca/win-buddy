@@ -35,7 +35,7 @@ export interface BuddyMeta {
 /** Il bestiario (§ 9): dati statici, condivisi da overlay e pannello. */
 export const CREATURE_META: BuddyMeta[] = [
   { id: "lume", name: "Lume", species: "spirito da lanterna", trait: "mani staccate" },
-  { id: "cotone", name: "Cotone", species: "draghetto di nuvola", trait: "coda a segmenti" },
+  { id: "cotone", name: "Cotone", species: "draghetto di nuvola", trait: "galleggia, orecchie lunghe" },
   { id: "bolete", name: "Bolete", species: "folletto fungo", trait: "silhouette a tappo" },
   { id: "quarzo", name: "Quarzo", species: "golem di cristallo", trait: "un occhio solo" },
   { id: "brace", name: "Brace", species: "draghetto sputafuoco", trait: "faccettato low-poly" },
@@ -175,6 +175,7 @@ export interface OverlayBoot {
 
 export interface MonitorInfo {
   index: number;
+  id: string;
   name: string;
   width: number;
   height: number;

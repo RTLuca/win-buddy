@@ -63,6 +63,13 @@ export const dndSetManual = (hidden: boolean) => invoke<DndStatus>("dnd_set_manu
 export const hittestUpdate = (x: number, y: number, w: number, h: number) =>
   invoke<void>("hittest_update", { x, y, w, h });
 
+export const overlayDragStart = () => invoke<void>("overlay_drag_start");
+
+export const overlayPositionReset = () => invoke<void>("overlay_position_reset");
+
+export const overlayPositionNudge = (x: number, y: number) =>
+  invoke<void>("overlay_position_nudge", { x, y });
+
 /** La superficie è pronta: per l'overlay il core risponde con lo stato iniziale. */
 export const surfaceReady = (surface: "overlay" | "panel" | "capture") =>
   invoke<OverlayBoot | null>("surface_ready", { surface });

@@ -1,0 +1,314 @@
+<style>
+  #buddy-controls {
+    --bc-bg: light-dark(#f4f1f8, #17141f);
+    --bc-panel: light-dark(#fffdfd, #211d2b);
+    --bc-panel-2: light-dark(#ece7f2, #302a3d);
+    --bc-line: light-dark(#d8cfe1, #4b415d);
+    --bc-text: light-dark(#251e2f, #f4eefb);
+    --bc-muted: light-dark(#716779, #bdb3c8);
+    --bc-purple: light-dark(#7761a7, #bba5ec);
+    --bc-green: light-dark(#397f68, #65bd99);
+    --bc-amber: light-dark(#a8701d, #f0bd64);
+    color: var(--bc-text);
+  }
+  #buddy-controls .patterns {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 20px;
+  }
+  #buddy-controls .pattern {
+    width: 100%;
+    padding: 0;
+    border: 1px solid var(--bc-line);
+    border-radius: 16px;
+    background: transparent;
+    color: inherit;
+    overflow: hidden;
+    text-align: left;
+    cursor: pointer;
+  }
+  #buddy-controls .pattern:hover { border-color: var(--bc-purple); }
+  #buddy-controls .pattern.is-selected {
+    border-color: var(--bc-purple);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--bc-purple) 24%, transparent);
+  }
+  #buddy-controls .desktop {
+    position: relative;
+    min-height: 340px;
+    background:
+      linear-gradient(145deg, color-mix(in srgb, var(--bc-purple) 14%, var(--bc-bg)), var(--bc-bg) 54%),
+      var(--bc-bg);
+    overflow: hidden;
+  }
+  #buddy-controls .work-window {
+    position: absolute;
+    inset: 25px 28px 32px 19px;
+    border-radius: 12px;
+    background: var(--bc-panel);
+    box-shadow: 0 15px 34px color-mix(in srgb, var(--bc-text) 9%, transparent);
+  }
+  #buddy-controls .work-top {
+    height: 31px;
+    border-bottom: 1px solid var(--bc-line);
+  }
+  #buddy-controls .work-body {
+    display: grid;
+    gap: 10px;
+    padding: 21px;
+  }
+  #buddy-controls .work-body span {
+    height: 7px;
+    border-radius: 5px;
+    background: var(--bc-panel-2);
+  }
+  #buddy-controls .work-body span:nth-child(2) { width: 78%; }
+  #buddy-controls .work-body span:nth-child(3) { width: 90%; }
+  #buddy-controls .work-body span:nth-child(4) { width: 66%; }
+  #buddy-controls .creature {
+    position: absolute;
+    right: 25px;
+    bottom: 55px;
+    width: 58px;
+    height: 65px;
+    border-radius: 48% 52% 42% 45%;
+    background: var(--bc-purple);
+    box-shadow: 0 12px 23px color-mix(in srgb, var(--bc-text) 20%, transparent);
+  }
+  #buddy-controls .creature::before,
+  #buddy-controls .creature::after {
+    content: "";
+    position: absolute;
+    top: -11px;
+    width: 20px;
+    height: 28px;
+    border-radius: 70% 20% 60% 30%;
+    background: var(--bc-purple);
+  }
+  #buddy-controls .creature::before { left: 4px; transform: rotate(-22deg); }
+  #buddy-controls .creature::after { right: 4px; transform: scaleX(-1) rotate(-22deg); }
+  #buddy-controls .eye {
+    position: absolute;
+    top: 25px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--bc-panel);
+  }
+  #buddy-controls .eye.left { left: 18px; }
+  #buddy-controls .eye.right { right: 18px; }
+  #buddy-controls .status-light {
+    position: absolute;
+    left: 23px;
+    bottom: 12px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--bc-green);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--bc-green) 22%, transparent);
+  }
+  #buddy-controls .dock {
+    position: absolute;
+    right: 17px;
+    bottom: 17px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px 7px 10px;
+    border-radius: 13px;
+    background: var(--bc-panel);
+    box-shadow: 0 13px 28px color-mix(in srgb, var(--bc-text) 17%, transparent);
+    font-size: 10px;
+  }
+  #buddy-controls .time {
+    color: var(--bc-green);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  #buddy-controls .divider {
+    width: 1px;
+    height: 18px;
+    background: var(--bc-line);
+  }
+  #buddy-controls .icon-control {
+    display: grid;
+    place-items: center;
+    min-width: 25px;
+    height: 25px;
+    padding: 0 6px;
+    border-radius: 7px;
+    background: var(--bc-panel-2);
+    color: var(--bc-text);
+    font-size: 9px;
+  }
+  #buddy-controls .expanded {
+    position: absolute;
+    right: 17px;
+    bottom: 55px;
+    display: grid;
+    gap: 7px;
+    width: 158px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--bc-panel);
+    box-shadow: 0 13px 30px color-mix(in srgb, var(--bc-text) 18%, transparent);
+    font-size: 9px;
+  }
+  #buddy-controls .expanded strong { font-size: 10px; }
+  #buddy-controls .expanded-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+  }
+  #buddy-controls .expanded-actions span {
+    padding: 6px 4px;
+    border-radius: 7px;
+    background: var(--bc-panel-2);
+    text-align: center;
+  }
+  #buddy-controls .hover-hint {
+    color: var(--bc-muted);
+    font-size: 8px;
+  }
+  #buddy-controls .tiny-timer {
+    position: absolute;
+    right: 27px;
+    bottom: 25px;
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: var(--bc-panel);
+    color: var(--bc-green);
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--bc-text) 15%, transparent);
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  #buddy-controls .hover-toolbar {
+    position: absolute;
+    right: 90px;
+    bottom: 66px;
+    display: flex;
+    gap: 6px;
+    padding: 7px;
+    border-radius: 10px;
+    background: var(--bc-panel);
+    box-shadow: 0 13px 30px color-mix(in srgb, var(--bc-text) 18%, transparent);
+  }
+  #buddy-controls .bubble {
+    position: absolute;
+    right: 75px;
+    bottom: 72px;
+    width: 168px;
+    padding: 12px;
+    border-radius: 14px 14px 4px 14px;
+    background: var(--bc-panel);
+    box-shadow: 0 14px 32px color-mix(in srgb, var(--bc-text) 18%, transparent);
+  }
+  #buddy-controls .bubble-label {
+    color: var(--bc-muted);
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+  #buddy-controls .bubble-time {
+    margin: 5px 0 3px;
+    font-size: 21px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  #buddy-controls .bubble-intent {
+    margin-bottom: 10px;
+    color: var(--bc-muted);
+    font-size: 9px;
+  }
+  #buddy-controls .pattern-copy {
+    min-height: 138px;
+    padding: 14px 15px 16px;
+    border-top: 1px solid var(--bc-line);
+    background: var(--bc-panel);
+  }
+  #buddy-controls .title-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+  }
+  #buddy-controls .title-line strong { font-size: 14px; }
+  #buddy-controls .recommended {
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bc-green) 18%, var(--bc-panel));
+    color: var(--bc-green);
+    font-size: 9px;
+  }
+  #buddy-controls .pattern-copy p {
+    margin: 0;
+    color: var(--bc-muted);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  #buddy-controls .rule {
+    display: block;
+    margin-top: 7px;
+    color: var(--bc-text);
+  }
+  @media (max-width: 820px) {
+    #buddy-controls .patterns { grid-template-columns: 1fr; }
+    #buddy-controls .desktop { min-height: 300px; }
+  }
+</style>
+
+<div id="buddy-controls">
+  <h2>Come si aprono i controlli accanto al buddy?</h2>
+  <p class="subtitle">Le funzioni sono le stesse; cambia quanto resta visibile mentre lavori.</p>
+
+  <div class="patterns">
+    <button class="pattern" type="button" data-choice="dock-progressivo" onclick="toggleSelect(this)" aria-label="Opzione A, Dock progressivo">
+      <div class="desktop">
+        <div class="work-window"><div class="work-top"></div><div class="work-body"><span></span><span></span><span></span><span></span></div></div>
+        <div class="expanded">
+          <strong>Chiudere la struttura del report</strong>
+          <div class="expanded-actions"><span>+5 min</span><span>Cattura</span><span>Concludi</span></div>
+          <span class="hover-hint">Si apre al passaggio o al clic</span>
+        </div>
+        <div class="creature"><span class="eye left"></span><span class="eye right"></span><span class="status-light"></span></div>
+        <div class="dock"><span class="time">18:42</span><span class="divider"></span><span class="icon-control">Ⅱ</span><span class="icon-control">•••</span></div>
+      </div>
+      <div class="pattern-copy">
+        <div class="title-line"><strong>A · Dock progressivo</strong><span class="recommended">Raccomandato</span></div>
+        <p>Tempo e pausa restano visibili; hover o clic espandono le altre azioni.<span class="rule">Una sola azione primaria sempre pronta, complessità su richiesta.</span></p>
+      </div>
+    </button>
+
+    <button class="pattern" type="button" data-choice="solo-hover" onclick="toggleSelect(this)" aria-label="Opzione B, Solo al passaggio">
+      <div class="desktop">
+        <div class="work-window"><div class="work-top"></div><div class="work-body"><span></span><span></span><span></span><span></span></div></div>
+        <div class="hover-toolbar"><span class="icon-control time">18:42</span><span class="icon-control">Ⅱ</span><span class="icon-control">+5</span><span class="icon-control">✓</span></div>
+        <div class="creature"><span class="eye left"></span><span class="eye right"></span><span class="status-light"></span></div>
+        <div class="tiny-timer">18:42</div>
+      </div>
+      <div class="pattern-copy">
+        <div class="title-line"><strong>B · Solo al passaggio</strong></div>
+        <p>A riposo si vede solo un piccolo timer; avvicinando il puntatore appare tutta la barra.<span class="rule">Molto discreto, ma le azioni sono meno scopribili e peggiori da tastiera.</span></p>
+      </div>
+    </button>
+
+    <button class="pattern" type="button" data-choice="nuvoletta-azioni" onclick="toggleSelect(this)" aria-label="Opzione C, Nuvoletta azioni">
+      <div class="desktop">
+        <div class="work-window"><div class="work-top"></div><div class="work-body"><span></span><span></span><span></span><span></span></div></div>
+        <div class="bubble">
+          <div class="bubble-label">Focus in corso</div>
+          <div class="bubble-time">18:42</div>
+          <div class="bubble-intent">Chiudere la struttura del report</div>
+          <div class="expanded-actions"><span>Pausa</span><span>+5</span><span>Fine</span></div>
+        </div>
+        <div class="creature"><span class="eye left"></span><span class="eye right"></span><span class="status-light"></span></div>
+      </div>
+      <div class="pattern-copy">
+        <div class="title-line"><strong>C · Nuvoletta azioni</strong></div>
+        <p>Un clic sul buddy apre un pannello contestuale più espressivo e leggibile.<span class="rule">Ottimo per fine sessione e avvisi; pesante come controllo permanente.</span></p>
+      </div>
+    </button>
+  </div>
+</div>

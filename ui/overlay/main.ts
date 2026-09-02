@@ -22,6 +22,7 @@ import {
 } from "../shared/contracts";
 import * as ipc from "../shared/ipc";
 import { BubbleLayer, stateLabel } from "./bubbles";
+import { normalizeScale } from "./scale";
 import { OverlayScene, type ScreenRect } from "./scene";
 
 const stage = document.getElementById("stage")!;
@@ -31,6 +32,11 @@ const soberLbl = document.getElementById("soberLbl")!;
 const soberTime = document.getElementById("soberTime")!;
 const quickbar = document.getElementById("quickbar")!;
 const qbPomo = document.getElementById("qbPomo") as HTMLButtonElement;
+const qbMove = document.getElementById("qbMove") as HTMLButtonElement;
+const qbScale = document.getElementById("qbScale") as HTMLButtonElement;
+const scalePopover = document.getElementById("scalePopover")!;
+const quickScale = document.getElementById("quickScale") as HTMLInputElement;
+const quickScaleVal = document.getElementById("quickScaleVal") as HTMLOutputElement;
 
 const scene = new OverlayScene(stage);
 const bubbles = new BubbleLayer(document.body);
@@ -40,6 +46,7 @@ let creature = "";
 let lastState: StateChanged = { state: "idle" };
 let lastSent: ScreenRect = { x: -1, y: -1, w: -1, h: -1 };
 let lastSentAt = 0;
+let lastCreatureRect: ScreenRect | null = null;
 
 // ------------------------------------------------------------- hit-test
 
@@ -48,9 +55,9 @@ let lastSentAt = 0;
  * non lo spazio vuoto attorno (§ 10.2). Throttle a 100 ms e solo su
  * variazioni percettibili.
  */
-function reportHitbox(creature: ScreenRect | null): void {
+function reportHitbox(creature: ScreenRect | null, force = false): void {
   const now = performance.now();
-  if (now - lastSentAt < 100) return;
+  if (!force && now - lastSentAt < 100) return;
 
   let rect: ScreenRect | null = null;
   if (mode === "sober") {
@@ -59,10 +66,14 @@ function reportHitbox(creature: ScreenRect | null): void {
   } else {
     rect = creature;
     rect = union(rect, bubbles.rect());
-    if (quickbar.classList.contains("on")) {
-      const q = quickbar.getBoundingClientRect();
-      rect = union(rect, { x: q.left, y: q.top, w: q.width, h: q.height });
-    }
+  }
+  if (quickbar.classList.contains("on")) {
+    const q = quickbar.getBoundingClientRect();
+    rect = union(rect, { x: q.left, y: q.top, w: q.width, h: q.height });
+  }
+  if (!scalePopover.hidden && scalePopover.classList.contains("on")) {
+    const s = scalePopover.getBoundingClientRect();
+    rect = union(rect, { x: s.left, y: s.top, w: s.width, h: s.height });
   }
   if (!rect) return;
 
@@ -79,7 +90,7 @@ function reportHitbox(creature: ScreenRect | null): void {
     Math.abs(n.y - lastSent.y) > 0.005 ||
     Math.abs(n.w - lastSent.w) > 0.005 ||
     Math.abs(n.h - lastSent.h) > 0.005;
-  if (!moved) return;
+  if (!force && !moved) return;
 
   lastSent = n;
   lastSentAt = now;
@@ -100,6 +111,7 @@ function union(a: ScreenRect | null, b: ScreenRect | null): ScreenRect | null {
 }
 
 scene.onFrame = (anchor, creature) => {
+  lastCreatureRect = creature;
   bubbles.place(anchor);
   reportHitbox(creature);
 };
@@ -110,12 +122,144 @@ scene.onFrame = (anchor, creature) => {
 // accetta i clic) e resta un attimo dopo che se n'è andato.
 let qbTimer = 0;
 function pokeQuickbar(): void {
-  if (mode === "sober") return;
+  const wasVisible = quickbar.classList.contains("on");
   quickbar.classList.add("on");
+  if (!wasVisible) reportHitbox(lastCreatureRect, true);
   window.clearTimeout(qbTimer);
-  qbTimer = window.setTimeout(() => quickbar.classList.remove("on"), 1600);
+  if (!scalePopover.classList.contains("on")) {
+    qbTimer = window.setTimeout(() => {
+      if (!quickbar.matches(":hover, :focus-within")) {
+        quickbar.classList.remove("on");
+        reportHitbox(lastCreatureRect, true);
+      }
+    }, 1600);
+  }
 }
 document.body.addEventListener("mousemove", pokeQuickbar);
+quickbar.addEventListener("focusout", pokeQuickbar);
+
+function closeScalePopover(): void {
+  scalePopover.classList.remove("on");
+  scalePopover.hidden = true;
+  scalePopover.inert = true;
+  qbScale.setAttribute("aria-expanded", "false");
+  reportHitbox(lastCreatureRect, true);
+  pokeQuickbar();
+}
+
+qbScale.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const opening = !scalePopover.classList.contains("on");
+  if (!opening) {
+    closeScalePopover();
+    return;
+  }
+
+  window.clearTimeout(qbTimer);
+  quickbar.classList.add("on");
+  scalePopover.hidden = false;
+  scalePopover.inert = false;
+  scalePopover.classList.add("on");
+  qbScale.setAttribute("aria-expanded", "true");
+  reportHitbox(lastCreatureRect, true);
+  quickScale.focus({ preventScroll: true });
+  void ipc
+    .settingsAll()
+    .then((settings) => {
+      const current = normalizeScale(Number(settings["overlay.scale"] ?? "100"));
+      persistedQuickScale = current;
+      quickScale.value = String(current);
+      quickScaleVal.value = `${current}%`;
+    })
+    .catch(() => {
+      /* resta il valore corrente: il controllo è comunque utilizzabile */
+    });
+});
+
+let scaleWrite = Promise.resolve();
+let persistedQuickScale = normalizeScale(Number(quickScale.value));
+let scaleRequest = 0;
+function saveQuickScale(value: string): void {
+  const next = normalizeScale(Number(value));
+  const request = ++scaleRequest;
+  scaleWrite = scaleWrite
+    .then(async () => {
+      try {
+        await ipc.settingSet("overlay.scale", String(next));
+        persistedQuickScale = next;
+        if (request === scaleRequest) quickScaleVal.classList.remove("error");
+      } catch {
+        let persisted = persistedQuickScale;
+        try {
+          const settings = await ipc.settingsAll();
+          persisted = normalizeScale(Number(settings["overlay.scale"] ?? persisted));
+        } catch {
+          /* usa l'ultimo valore confermato se anche la rilettura fallisce */
+        }
+        if (request === scaleRequest) {
+          persistedQuickScale = persisted;
+          quickScale.value = String(persisted);
+          quickScaleVal.value = "Errore";
+          quickScaleVal.classList.add("error");
+        }
+      }
+    });
+}
+
+function setQuickScale(value: number, commit: boolean): void {
+  const next = normalizeScale(value);
+  quickScale.value = String(next);
+  quickScaleVal.value = `${next}%`;
+  quickScaleVal.classList.remove("error");
+  if (commit) saveQuickScale(String(next));
+}
+
+quickScale.addEventListener("input", () => setQuickScale(Number(quickScale.value), false));
+quickScale.addEventListener("change", () => setQuickScale(Number(quickScale.value), true));
+document.getElementById("scaleDown")!.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setQuickScale(Number(quickScale.value) - 10, true);
+});
+document.getElementById("scaleUp")!.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setQuickScale(Number(quickScale.value) + 10, true);
+});
+
+qbMove.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  closeScalePopover();
+  window.clearTimeout(qbTimer);
+  void ipc.overlayDragStart();
+});
+
+let moveWrite = Promise.resolve();
+qbMove.addEventListener("keydown", (e) => {
+  const direction: Record<string, [number, number]> = {
+    ArrowLeft: [-1, 0],
+    ArrowRight: [1, 0],
+    ArrowUp: [0, -1],
+    ArrowDown: [0, 1],
+  };
+  const delta = direction[e.key];
+  if (!delta) return;
+  e.preventDefault();
+  e.stopPropagation();
+  moveWrite = moveWrite
+    .then(() => ipc.overlayPositionNudge(delta[0], delta[1]))
+    .catch(() => {
+      /* una pressione successiva può riprovare */
+    });
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && scalePopover.classList.contains("on")) {
+    e.stopPropagation();
+    closeScalePopover();
+    qbScale.focus();
+  }
+});
 
 function refreshQuickbarPomo(): void {
   const active = lastState.state === "focus" || lastState.state === "break";
@@ -149,7 +293,6 @@ function applyMode(next: "full" | "sober"): void {
   scene.setVisible(!sober);
   bubbles.setVisible(!sober); // in sobria parlano pillola e toast, non i fumetti
   if (sober) {
-    quickbar.classList.remove("on");
     renderSober();
   }
 }

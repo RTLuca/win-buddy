@@ -2,7 +2,7 @@
 //! è effimero per costruzione (bolla mostrata, hitbox, orologi di servizio).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::Mutex;
 
 use chrono::{LocalResult, NaiveDateTime, TimeZone};
@@ -34,6 +34,9 @@ pub struct AppState {
     pub hitbox: Mutex<Option<HitBox>>,
     /// L'overlay sta accettando i clic (il flag va toccato solo ai cambi).
     pub overlay_interactive: AtomicBool,
+    /// Generazione effimera del drag: reset e nuovi drag invalidano in modo
+    /// atomico ogni salvataggio tardivo senza sporcare le impostazioni.
+    pub overlay_drag_generation: AtomicU64,
 }
 
 impl AppState {
@@ -55,6 +58,7 @@ impl AppState {
             last_interaction: AtomicI64::new(now),
             hitbox: Mutex::new(None),
             overlay_interactive: AtomicBool::new(false),
+            overlay_drag_generation: AtomicU64::new(0),
         })
     }
 }

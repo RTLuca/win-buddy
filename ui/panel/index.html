@@ -99,6 +99,16 @@
             <option value="top-left">alto a sinistra</option>
           </select>
         </label>
+        <div class="row position-reset-row">
+          <span>
+            Posizione manuale
+            <small>Riporta il buddy all’angolo selezionato</small>
+          </span>
+          <span class="position-reset-action">
+            <span id="positionResetStatus" class="inline-status" aria-live="polite"></span>
+            <button type="button" id="resetPosition" class="ghost compact">Ripristina</button>
+          </span>
+        </div>
         <label class="row">
           <span>DND automatico su fullscreen e presentazioni</span>
           <input type="checkbox" id="setAutoDnd" />

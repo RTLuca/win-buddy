@@ -11,3 +11,9 @@ node_modules/
 
 # artefatti di bundle
 src-tauri/gen/
+
+# stato locale degli strumenti di progettazione e sviluppo agentico
+.superpowers/brainstorm/.last-port
+.superpowers/brainstorm/.last-token
+.superpowers/brainstorm/*/state/
+.superpowers/sdd/

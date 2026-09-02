@@ -81,6 +81,9 @@ INSERT OR IGNORE INTO settings(key, value) VALUES
   ('pomodoro.long_every',   '4'),
   ('pomodoro.stale_sec',    '120'),       -- oltre questo divario la sessione è invalidata
   ('overlay.idle_sleep_min','20'),        -- dopo quanto si distrugge la webview
+  ('overlay.scale',         '100'),       -- percentuale 50–200
+  ('overlay.monitor',       'primary'),   -- "primary" o name:<id dispositivo>
+  ('overlay.position.mode', 'corner'),    -- corner | manual
   ('schema.version',        '1');
 
 -- ---------------------------------------------------------------- query di riferimento

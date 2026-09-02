@@ -70,7 +70,22 @@ export type Slot =
   | "legL"
   | "footL"
   | "legR"
-  | "footR";
+  | "footR"
+  // Le creature alate senza arti. Un umanoide non li mappa e non se ne
+  // accorge, esattamente come Roberto 2.0 non mappa le gambe: uno slot che
+  // il rig non ha è una riga che non fa niente, non un errore.
+  | "snout"
+  | "earL"
+  | "earTipL"
+  | "earR"
+  | "earTipR"
+  | "wingL"
+  | "wingTipL"
+  | "wingR"
+  | "wingTipR"
+  | "tail"
+  | "tailMid"
+  | "tailTip";
 
 /** Nome dell'osso nel GLB per ogni slot. */
 export type RigMap = Partial<Record<Slot, string>>;
@@ -91,25 +106,39 @@ export type RigMap = Partial<Record<Slot, string>>;
  * gruppo intero attorno ai piedi, che per un pupazzo che dondola è anche più
  * giusto.
  *
- * L'ordine è quello della gerarchia: l'antenna sta sotto la testa e va dopo.
+ * L'ordine è quello della gerarchia: l'antenna sta sotto la testa e va dopo,
+ * il muso sotto la testa, le punte sotto le loro radici. Fra fratelli l'ordine
+ * non conta — orecchie, ali e coda pendono tutte dal busto.
  */
 const AIMED: Slot[] = [
   "spine",
   "chest",
   "neck",
   "head",
+  "snout",
   "antenna",
   "antennaTip",
+  "earL",
+  "earTipL",
+  "earR",
+  "earTipR",
   "armL",
   "foreL",
   "handL",
   "armR",
   "foreR",
   "handR",
+  "wingL",
+  "wingTipL",
+  "wingR",
+  "wingTipR",
   "legL",
   "footL",
   "legR",
   "footR",
+  "tail",
+  "tailMid",
+  "tailTip",
 ];
 
 /** Tutti gli slot mappati, compresi quelli fermi: servono a `getBox()`. */
@@ -131,9 +160,43 @@ const ALL: Slot[] = ["root", "hips", ...AIMED];
  * locale dell'osso, a riposo, guarda in su, e punta quello. La posa di riposo
  * non si muove di un pixel — cambia solo *come si legge* uno scostamento.
  *
- * Le membra no: lì «il braccio va in giù» ha senso solo lungo l'osso.
+ * Le membra no: lì «il braccio va in giù» ha senso solo lungo l'osso. Muso,
+ * ali e coda stanno con le membra per la stessa ragione; le orecchie invece
+ * riposano verticali come l'antenna, e si scrivono con lo stesso vocabolario
+ * — `z` è portarle avanti sugli occhi, `x` è piegarle di lato.
  */
-const UPRIGHT = new Set<Slot>(["root", "hips", "spine", "chest", "neck", "head", "antenna", "antennaTip"]);
+const UPRIGHT = new Set<Slot>([
+  "root",
+  "hips",
+  "spine",
+  "chest",
+  "neck",
+  "head",
+  "antenna",
+  "antennaTip",
+  "earL",
+  "earTipL",
+  "earR",
+  "earTipR",
+]);
+
+/**
+ * Gli slot che si portano dietro il genitore invece di ignorarlo.
+ *
+ * Puntare un osso gli dà un orientamento *assoluto* nello spazio della
+ * creatura, e la conseguenza è meno ovvia di quanto sembri: un osso puntato
+ * non segue più il suo genitore. Per l'antenna di Roberto è voluto — è appesa,
+ * non guidata, e ogni posa scrive di suo quanto insegue la testa. Per un muso
+ * no: un muso che resta puntato in avanti mentre la testa gira di trenta gradi
+ * non è una scelta espressiva, è un naso staccato dalla faccia.
+ *
+ * Per questi slot lo scostamento si somma a dove il genitore è arrivato,
+ * invece di sostituirlo. Costa una riga — si converte in spazio genitore
+ * usando l'orientamento che il genitore aveva *a riposo* anziché quello
+ * attuale — e va scritto con `bend`, che è uno scostamento: un `aim` assoluto
+ * su uno slot che insegue significherebbe due cose insieme.
+ */
+const FOLLOW = new Set<Slot>(["snout"]);
 
 /**
  * Una posa. `aim` dà la direzione assoluta dell'asse dell'osso nello spazio
@@ -166,6 +229,16 @@ export interface PoseSink {
   lean(v: number): void;
   lift(v: number): void;
   turn(v: number): void;
+  /**
+   * Quanto acquietare il moto continuo mentre il gesto è in corso, da 0
+   * (niente) a 1 (fermo del tutto).
+   *
+   * Serve ai gesti che *sono* un'assenza di movimento: una planata è «le ali
+   * smettono di battere», e se il battito continua sotto resta solo un tuffo.
+   * Il moto continuo si somma sempre alla posa — è quello che tiene viva la
+   * creatura — quindi l'unico modo di toglierlo è chiederlo.
+   */
+  calm(v: number): void;
 }
 
 /**
@@ -204,6 +277,24 @@ export interface SkinnedSpec {
   rig: RigMap;
   /** Posa di riposo: gli stati la ereditano per gli slot che non ridichiarano. */
   base: Pose;
+  /**
+   * Il freno di un osso: quanto di ciò che gli si chiede arriva davvero, da 0
+   * (immobile) a 1 (tutto). Chi non compare vale 1. Da non confondere con lo
+   * smorzamento (`damp` in `update`), che è il tempo che una posa ci mette ad
+   * arrivare: questo è quanta strada fa, non quanto ci mette.
+   *
+   * Serve perché un rig automatico non distribuisce i pesi come farebbe un
+   * rigger: su Cotone l'ala di un lato porta tre volte i vertici dell'altra,
+   * cioè si è presa mezzo fianco. Ruotarle della stessa quantità non dà un
+   * movimento simmetrico, dà un'ala che sbatte e un fianco che si piega su sé
+   * stesso. Il freno esiste per quello — non per correggere una posa scritta
+   * male, ma per correggere un peso assegnato male da una macchina.
+   *
+   * Agisce sul risultato finale, posa e gesto e moto continuo insieme:
+   * l'osso si muove *meno*, non si muove diversamente, e le pose restano
+   * scritte simmetriche come vanno pensate.
+   */
+  brake?: Partial<Record<Slot, number>>;
   poses: Partial<Record<BuddyState, Pose>>;
   /** Gli stati senza piano non hanno gesti: in `alert` e in `focus` è voluto. */
   gestures: Partial<Record<BuddyState, GesturePlan>>;
@@ -211,6 +302,16 @@ export interface SkinnedSpec {
   height: number;
   /** Quota dei piedi: la pedana d'ombra della scena sta a −1,7. */
   ground: number;
+  /**
+   * Quanto la creatura sta sospesa sopra la pedana. Chi cammina non lo scrive.
+   *
+   * Non è un `lift` di comodo nella posa di riposo: dice anche a `getBox()`
+   * che sotto la creatura non c'è un corpo ma aria, e che il rettangolo del
+   * click-through non deve arrivare fino a terra — per un ospite appoggiato è
+   * giusto che ci arrivi, per uno sospeso sarebbe una striscia di schermo
+   * rubata a niente.
+   */
+  hover?: number;
   /** Raggio dell'anello di stato attorno ai piedi. */
   haloRadius: number;
   /**
@@ -265,6 +366,10 @@ interface SlotState {
   axis: Vector3;
   /** Direzione dell'asse a riposo, in spazio creatura. */
   rest: Vector3;
+  /** Orientamento del genitore a riposo, in spazio creatura: serve a FOLLOW. */
+  parentRest: Quaternion;
+  /** Il freno dello slot: 1 se la spec non ne dichiara uno. */
+  brake: number;
   target: Vector3;
   cur: Vector3;
   /** Quello che il gesto chiede in questo fotogramma, se lo chiede. */
@@ -300,6 +405,9 @@ export class SkinnedBuddy implements Buddy {
   private gLean = 0;
   private gLift = 0;
   private gTurn = 0;
+  private gCalm = 0;
+  /** Copia riscalata della TUNE quando un gesto chiede quiete: mai allocata nel loop. */
+  private calmed: Tune = { speed: 1, bob: 0, rock: 0, turn: 0, breath: 0, swing: 0, look: 0 };
 
   // valori del corpo, smorzati come le pose
   private rock = 0;
@@ -340,11 +448,30 @@ export class SkinnedBuddy implements Buddy {
     turn: (v) => {
       this.gTurn = v;
     },
+    calm: (v) => {
+      this.gCalm = v;
+    },
   };
+
+  /** Quota di riposo del fondo della creatura: pedana più galleggiamento. */
+  private readonly floor: number;
+  /**
+   * A che altezza sopra il proprio fondo la creatura ruota.
+   *
+   * Chi cammina ruota attorno ai piedi: un pupazzo che dondola pianta i piedi
+   * e sposta la testa, e il perno a terra è la cosa giusta. Chi galleggia no —
+   * sospeso in aria non c'è niente che lo tenga per il fondo, e col perno lì
+   * ogni rollio lo fa oscillare come se fosse appeso a un chiodo. Peggio
+   * ancora una capriola, che gli farebbe descrivere un arco largo quanto la
+   * creatura e passare sotto la pedana. Chi galleggia ruota attorno al proprio
+   * centro, che è dove ruotano le cose che volano.
+   */
+  private pivot = 0;
 
   constructor(meta: BuddyMeta, spec: SkinnedSpec) {
     this.meta = meta;
     this.spec = spec;
+    this.floor = spec.ground + (spec.hover ?? 0);
     this.group.add(this.rig);
   }
 
@@ -379,8 +506,11 @@ export class SkinnedBuddy implements Buddy {
     const h = box.max.y - box.min.y || 1;
     const k = this.spec.height / h;
     model.scale.setScalar(k);
-    model.position.y = -box.min.y * k;
-    this.rig.position.y = this.spec.ground;
+    // il fondo del modello finisce sul perno del rig, o mezza statura sotto
+    // se la creatura galleggia (v. `pivot`)
+    this.pivot = (this.spec.hover ?? 0) > 0 ? this.spec.height / 2 : 0;
+    model.position.y = -box.min.y * k - this.pivot;
+    this.rig.position.y = this.floor + this.pivot;
 
     model.traverse((o) => {
       o.castShadow = false;
@@ -429,11 +559,16 @@ export class SkinnedBuddy implements Buddy {
         ? new Vector3(0, 1, 0).applyQuaternion(rigQ).applyQuaternion(boneQ.clone().invert())
         : new Vector3(0, 1, 0);
       const rest = axis.clone().applyQuaternion(boneQ).applyQuaternion(toRig).normalize();
+      // com'era orientato il genitore prima che l'animatore toccasse niente
+      const parentRest = new Quaternion();
+      if (bone.parent) bone.parent.getWorldQuaternion(parentRest).premultiply(toRig);
       this.slots.set(slot, {
         bone,
         restQ: bone.quaternion.clone(),
         axis,
         rest,
+        parentRest,
+        brake: this.spec.brake?.[slot] ?? 1,
         target: rest.clone(),
         // si parte da come riposa il modello: la T-pose non si vede mai, le
         // braccia scendono lungo i fianchi con lo stesso smorzamento di
@@ -549,8 +684,10 @@ export class SkinnedBuddy implements Buddy {
 
   update(t: number, dt: number): void {
     if (!this.loaded) return;
-    const k = TUNE[this.state];
-    const w = t * k.speed;
+    const tune = TUNE[this.state];
+    // il tempo non si acquieta mai: rallentarlo farebbe scattare le sinusoidi
+    // nell'istante in cui il gesto entra o esce
+    const w = t * tune.speed;
     const damp = 1 - Math.pow(0.5, dt / HALF_LIFE);
 
     this.mixer?.update(dt);
@@ -573,6 +710,7 @@ export class SkinnedBuddy implements Buddy {
     this.gLean = 0;
     this.gLift = 0;
     this.gTurn = 0;
+    this.gCalm = 0;
     this.tickGesture(dt);
     let g = 0;
     if (this.gesture) {
@@ -581,13 +719,30 @@ export class SkinnedBuddy implements Buddy {
       this.gesture.at(u, this.sink);
     }
 
+    // La quiete che il gesto ha chiesto, se l'ha chiesta: entra e esce con la
+    // stessa dissolvenza di tutto il resto, altrimenti il moto continuo si
+    // spegnerebbe di colpo — che è esattamente ciò che si vuole evitare.
+    let k = tune;
+    if (this.gCalm > 0 && g > 0) {
+      const m = 1 - this.gCalm * g;
+      const q = this.calmed;
+      q.speed = tune.speed;
+      q.bob = tune.bob * m;
+      q.rock = tune.rock * m;
+      q.turn = tune.turn * m;
+      q.breath = tune.breath * m;
+      q.swing = tune.swing * m;
+      q.look = tune.look * m;
+      k = q;
+    }
+
     // 3 · il corpo intero: perno ai piedi, tre periodi primi fra loro
     const a = Math.sin(w);
     const b = Math.sin(w * 0.41 + 1.3);
     const c = Math.sin(w * 0.67 + 2.7);
 
     this.rig.position.y =
-      this.spec.ground + this.lift + (a * 0.5 + 0.5) * k.bob + this.gLift * g;
+      this.floor + this.pivot + this.lift + (a * 0.5 + 0.5) * k.bob + this.gLift * g;
     this.rig.rotation.set(
       this.lean + a * k.breath * 0.12 + this.gLean * g,
       c * k.turn + this.gTurn * g,
@@ -626,13 +781,21 @@ export class SkinnedBuddy implements Buddy {
       this.tmpV.copy(s.cur);
       if (s.wanted && g > 0) this.tmpV.lerp(this.tmpV3.copy(s.want).normalize(), g);
       this.motion(slot, w, k, a, b, c, this.tmpV);
+      // il freno, se l'osso ne ha uno: si riavvicina al riposo di quanto gli
+      // manca per arrivare a 1, e vale per tutti e tre gli strati insieme
+      if (s.brake < 1) this.tmpV.lerp(s.rest, 1 - s.brake);
       this.tmpV.normalize();
 
       // dalla direzione in spazio creatura alla rotazione in spazio genitore
       this.tmpV.applyQuaternion(rigQ); // → mondo
       const parent = s.bone.parent;
       if (parent) {
-        this.tmpV.applyQuaternion(this.tmpQ.copy(parent.getWorldQuaternion(this.tmpQ)).invert());
+        // Chi insegue si converte con l'orientamento che il genitore aveva a
+        // riposo: quello che il genitore ha fatto nel frattempo non viene
+        // annullato, e lo scostamento gli si somma sopra (v. FOLLOW).
+        if (FOLLOW.has(slot)) this.tmpQ.copy(rigQ).multiply(s.parentRest).invert();
+        else this.tmpQ.copy(parent.getWorldQuaternion(this.tmpQ)).invert();
+        this.tmpV.applyQuaternion(this.tmpQ);
       }
       this.tmpV2.copy(s.axis).applyQuaternion(s.restQ);
       s.bone.quaternion.setFromUnitVectors(this.tmpV2, this.tmpV).multiply(s.restQ);
@@ -727,6 +890,66 @@ export class SkinnedBuddy implements Buddy {
         dir.z += a * k.bob * 0.15;
         break;
 
+      // Il muso non decide niente: insegue la testa con un ritardo brevissimo
+      // e ci mette sopra un fremito suo, più rapido di tutto il resto. È
+      // quello che fa leggere «sta annusando» anche quando non sta annusando.
+      case "snout":
+        dir.y += Math.sin(w * 2.1 - 0.4) * (k.breath * 0.6 + k.look * 0.2);
+        dir.x += Math.sin(w * 0.9 - 0.5) * k.look * 0.45;
+        break;
+
+      // Le orecchie sono per questa creatura quello che l'antenna è per
+      // Roberto: la parte senza muscoli, quella che parte per prima e si
+      // ferma per ultima. Le due non arrivano mai insieme — mezzo periodo di
+      // sfasamento fra destra e sinistra — e le punte frustano al doppio.
+      case "earR":
+        dir.x += Math.sin(w * 1.25 - 0.6) * (k.look * 0.7 + k.bob * 0.4);
+        dir.z += Math.sin(w * 0.79 - 0.9) * (k.look * 0.5 + k.breath * 0.35);
+        break;
+      case "earTipR":
+        dir.x += Math.sin(w * 1.25 - 1.15) * (k.look * 1.3 + k.bob * 0.75);
+        dir.z += Math.sin(w * 0.79 - 1.45) * (k.look * 0.9 + k.breath * 0.6);
+        break;
+      case "earL":
+        dir.x += Math.sin(w * 1.25 + 1.1) * (k.look * 0.7 + k.bob * 0.4);
+        dir.z += Math.sin(w * 0.79 + 0.8) * (k.look * 0.5 + k.breath * 0.35);
+        break;
+      case "earTipL":
+        dir.x += Math.sin(w * 1.25 + 0.55) * (k.look * 1.3 + k.bob * 0.75);
+        dir.z += Math.sin(w * 0.79 + 0.25) * (k.look * 0.9 + k.breath * 0.6);
+        break;
+
+      // Le ali battono in fase fra loro — nessuno vola con le ali alternate —
+      // e sono l'unica cosa che spiega perché una creatura senza gambe stia
+      // per aria: se restano ferme, il galleggiamento sembra un errore di
+      // posizionamento invece che una scelta.
+      case "wingR":
+      case "wingL":
+        dir.y += Math.sin(w * 1.6) * (k.swing * 1.0 + k.bob * 0.5);
+        dir.z += Math.sin(w * 1.6 - 0.3) * k.swing * 0.35;
+        break;
+      case "wingTipR":
+      case "wingTipL":
+        dir.y += Math.sin(w * 1.6 - 0.55) * (k.swing * 1.5 + k.bob * 0.8);
+        dir.z += Math.sin(w * 1.6 - 0.85) * k.swing * 0.55;
+        break;
+
+      // L'onda viaggiante: ogni segmento in ritardo sul precedente, come per
+      // la coda delle procedurali. È quel ritardo a far leggere una coda
+      // invece che tre palline attaccate a uno stecco.
+      case "tail":
+        dir.x += Math.sin(w * 1.15) * (k.look * 0.8 + k.swing * 0.6);
+        dir.y += Math.sin(w * 0.73 + 0.4) * (k.bob * 0.9 + k.breath * 0.5);
+        break;
+      case "tailMid":
+        dir.x += Math.sin(w * 1.15 - 0.6) * (k.look * 1.3 + k.swing * 1.0);
+        dir.y += Math.sin(w * 0.73 - 0.2) * (k.bob * 1.3 + k.breath * 0.8);
+        break;
+      case "tailTip":
+        dir.x += Math.sin(w * 1.15 - 1.2) * (k.look * 1.9 + k.swing * 1.5);
+        dir.y += Math.sin(w * 0.73 - 0.8) * (k.bob * 1.8 + k.breath * 1.1);
+        break;
+
       default:
         break;
     }
@@ -743,7 +966,7 @@ export class SkinnedBuddy implements Buddy {
   getAnchor(): Vector3 {
     const head = this.slots.get("head");
     if (head) head.bone.getWorldPosition(this.anchor);
-    else this.anchor.set(0, this.spec.ground + this.spec.height * 0.85, 0).add(this.group.position);
+    else this.anchor.set(0, this.floor + this.spec.height * 0.85, 0).add(this.group.position);
     this.anchor.y += this.spec.anchorLift;
     return this.anchor;
   }
@@ -771,7 +994,11 @@ export class SkinnedBuddy implements Buddy {
     // le ossa sono linee, la creatura ha uno spessore: un margine grossolano
     // sbaglia per difetto, che è il verso giusto per un rettangolo di clic
     target.expandByScalar(this.spec.girth);
-    target.expandByPoint(this.tmpV.set(0, this.spec.ground, 0));
+    // Sotto l'osso più basso c'è ancora corpo — la pancia, i piedi — e il
+    // fondo del modello sta per costruzione all'origine del rig. Per chi
+    // cammina quella quota è la pedana; per chi galleggia è dove finisce la
+    // creatura e comincia l'aria, e il rettangolo si ferma lì.
+    target.expandByPoint(this.tmpV.set(0, this.rig.position.y - this.pivot, 0));
     return target;
   }
 

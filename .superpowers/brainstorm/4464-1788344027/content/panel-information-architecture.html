@@ -1,0 +1,574 @@
+<style>
+  #panel-ia {
+    --pi-page: light-dark(#f3eff7, #15121c);
+    --pi-panel: light-dark(#fffdfd, #211d2b);
+    --pi-panel-2: light-dark(#f0ebf4, #2d2738);
+    --pi-line: light-dark(#d9d1e1, #493f59);
+    --pi-text: light-dark(#251f2e, #f5effb);
+    --pi-muted: light-dark(#706879, #bbb2c7);
+    --pi-purple: light-dark(#7560a3, #baa5e8);
+    --pi-green: light-dark(#3d816b, #63b995);
+    --pi-blue: light-dark(#4b84a2, #82c2e4);
+    --pi-amber: light-dark(#a36f20, #edbc63);
+    color: var(--pi-text);
+  }
+  #panel-ia .view-switcher {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 7px;
+    margin: 17px 0 14px;
+  }
+  #panel-ia .view-btn {
+    padding: 7px 11px;
+    border: 1px solid var(--pi-line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--pi-muted);
+    cursor: pointer;
+  }
+  #panel-ia .view-btn[aria-pressed="true"] {
+    border-color: var(--pi-text);
+    background: var(--pi-text);
+    color: var(--pi-panel);
+  }
+  #panel-ia .stage {
+    display: grid;
+    grid-template-columns: minmax(230px, 1fr) minmax(320px, 380px) minmax(230px, 1fr);
+    gap: 22px;
+    align-items: center;
+    padding: 25px;
+    border-radius: 18px;
+    background:
+      radial-gradient(circle at 50% 12%, color-mix(in srgb, var(--pi-purple) 13%, transparent), transparent 31%),
+      var(--pi-page);
+  }
+  #panel-ia .ownership {
+    display: grid;
+    gap: 12px;
+  }
+  #panel-ia .ownership-title {
+    color: var(--pi-muted);
+    font-size: 10px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+  }
+  #panel-ia .ownership strong {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  #panel-ia .ownership-list {
+    display: grid;
+    gap: 8px;
+  }
+  #panel-ia .ownership-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--pi-muted);
+    font-size: 11px;
+  }
+  #panel-ia .ownership-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--pi-purple);
+  }
+  #panel-ia .ownership.panel-side .ownership-dot { background: var(--pi-green); }
+  #panel-ia .arrow {
+    color: var(--pi-muted);
+    font-size: 10px;
+  }
+  #panel-ia .panel-window {
+    width: 100%;
+    min-height: 640px;
+    border-radius: 15px;
+    background: var(--pi-panel);
+    box-shadow: 0 24px 55px color-mix(in srgb, var(--pi-text) 16%, transparent);
+    overflow: hidden;
+  }
+  #panel-ia .window-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 36px;
+    padding: 0 13px;
+    border-bottom: 1px solid var(--pi-line);
+    color: var(--pi-muted);
+    font-size: 9px;
+  }
+  #panel-ia .window-brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--pi-text);
+    font-weight: 600;
+  }
+  #panel-ia .brand-mark {
+    width: 14px;
+    height: 14px;
+    border-radius: 48% 52% 45% 55%;
+    background: var(--pi-purple);
+  }
+  #panel-ia .main-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    padding: 0 10px;
+    border-bottom: 1px solid var(--pi-line);
+  }
+  #panel-ia .main-tabs button {
+    min-width: 0;
+    padding: 11px 3px 9px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--pi-muted);
+    font-size: 9px;
+  }
+  #panel-ia .main-tabs button.active {
+    border-bottom-color: var(--pi-purple);
+    color: var(--pi-text);
+  }
+  #panel-ia .panel-content {
+    padding: 16px;
+  }
+  #panel-ia .panel-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 13px;
+  }
+  #panel-ia .panel-heading h3 {
+    margin: 0 0 3px;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  #panel-ia .panel-heading p {
+    margin: 0;
+    color: var(--pi-muted);
+    font-size: 10px;
+  }
+  #panel-ia .context-pill {
+    padding: 5px 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--pi-green) 14%, var(--pi-panel));
+    color: var(--pi-green);
+    font-size: 9px;
+    white-space: nowrap;
+  }
+  #panel-ia .sub-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    margin-bottom: 15px;
+    padding: 4px;
+    border-radius: 9px;
+    background: var(--pi-panel-2);
+  }
+  #panel-ia .sub-tabs span {
+    padding: 7px 4px;
+    border-radius: 6px;
+    color: var(--pi-muted);
+    text-align: center;
+    font-size: 9px;
+  }
+  #panel-ia .sub-tabs span.active {
+    background: var(--pi-panel);
+    color: var(--pi-text);
+    box-shadow: 0 4px 11px color-mix(in srgb, var(--pi-text) 8%, transparent);
+  }
+  #panel-ia .section-label {
+    display: block;
+    margin: 13px 0 7px;
+    color: var(--pi-muted);
+    font-size: 9px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  #panel-ia .field,
+  #panel-ia .select-field {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 11px;
+    border: 1px solid var(--pi-line);
+    border-radius: 9px;
+    background: var(--pi-panel);
+    color: var(--pi-text);
+    font-size: 10px;
+  }
+  #panel-ia .preset-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 7px;
+  }
+  #panel-ia .preset {
+    padding: 9px;
+    border: 1px solid var(--pi-line);
+    border-radius: 9px;
+    background: transparent;
+  }
+  #panel-ia .preset.active {
+    border-color: var(--pi-purple);
+    background: color-mix(in srgb, var(--pi-purple) 10%, var(--pi-panel));
+  }
+  #panel-ia .preset strong { display: block; font-size: 10px; }
+  #panel-ia .preset span { color: var(--pi-muted); font-size: 8px; }
+  #panel-ia .two-fields {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 7px;
+  }
+  #panel-ia .compact-field {
+    padding: 8px 9px;
+    border-radius: 8px;
+    background: var(--pi-panel-2);
+  }
+  #panel-ia .compact-field span { display: block; color: var(--pi-muted); font-size: 8px; }
+  #panel-ia .compact-field strong { font-size: 10px; }
+  #panel-ia .protection {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--pi-green) 10%, var(--pi-panel));
+    font-size: 9px;
+  }
+  #panel-ia .protection span { color: var(--pi-muted); }
+  #panel-ia .primary-action,
+  #panel-ia .secondary-action {
+    width: 100%;
+    padding: 10px;
+    border: 0;
+    border-radius: 9px;
+    background: var(--pi-text);
+    color: var(--pi-panel);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  #panel-ia .secondary-action {
+    background: var(--pi-panel-2);
+    color: var(--pi-text);
+  }
+  #panel-ia .queue,
+  #panel-ia .history,
+  #panel-ia .settings-list {
+    display: grid;
+    gap: 6px;
+  }
+  #panel-ia .queue-row,
+  #panel-ia .history-row,
+  #panel-ia .setting-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 9px;
+    align-items: center;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--pi-line);
+  }
+  #panel-ia .queue-row:last-child,
+  #panel-ia .history-row:last-child,
+  #panel-ia .setting-row:last-child { border-bottom: 0; }
+  #panel-ia .queue-row strong,
+  #panel-ia .history-row strong,
+  #panel-ia .setting-row strong { display: block; font-size: 10px; }
+  #panel-ia .queue-row span,
+  #panel-ia .history-row span,
+  #panel-ia .setting-row span { color: var(--pi-muted); font-size: 8px; }
+  #panel-ia .row-action {
+    padding: 5px 7px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--pi-panel-2);
+    color: var(--pi-text);
+    font-size: 8px;
+  }
+  #panel-ia .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 7px;
+    margin-bottom: 12px;
+  }
+  #panel-ia .summary-item {
+    padding: 9px 7px;
+    border-radius: 9px;
+    background: var(--pi-panel-2);
+  }
+  #panel-ia .summary-item span { display: block; color: var(--pi-muted); font-size: 8px; }
+  #panel-ia .summary-item strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+  #panel-ia .status {
+    padding: 4px 6px;
+    border-radius: 999px;
+    color: var(--pi-green);
+    background: color-mix(in srgb, var(--pi-green) 13%, var(--pi-panel));
+    font-size: 8px;
+  }
+  #panel-ia .status.partial {
+    color: var(--pi-amber);
+    background: color-mix(in srgb, var(--pi-amber) 13%, var(--pi-panel));
+  }
+  #panel-ia .chart {
+    display: flex;
+    align-items: end;
+    gap: 8px;
+    height: 120px;
+    padding: 12px 7px 5px;
+    border-bottom: 1px solid var(--pi-line);
+  }
+  #panel-ia .bar-wrap {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    align-items: end;
+    gap: 5px;
+    height: 100%;
+    flex: 1;
+    color: var(--pi-muted);
+    text-align: center;
+    font-size: 8px;
+  }
+  #panel-ia .bar {
+    align-self: end;
+    min-height: 5px;
+    border-radius: 5px 5px 1px 1px;
+    background: var(--pi-green);
+  }
+  #panel-ia .legend-line {
+    display: flex;
+    justify-content: space-between;
+    margin: 10px 0 14px;
+    color: var(--pi-muted);
+    font-size: 9px;
+  }
+  #panel-ia .category-bar {
+    display: flex;
+    height: 10px;
+    margin: 7px 0;
+    border-radius: 5px;
+    overflow: hidden;
+    background: var(--pi-panel-2);
+  }
+  #panel-ia .category-bar span:nth-child(1) { width: 52%; background: var(--pi-purple); }
+  #panel-ia .category-bar span:nth-child(2) { width: 31%; background: var(--pi-green); }
+  #panel-ia .category-bar span:nth-child(3) { width: 17%; background: var(--pi-blue); }
+  #panel-ia .setting-group {
+    padding: 10px 0 2px;
+    border-bottom: 1px solid var(--pi-line);
+  }
+  #panel-ia .setting-group:last-child { border-bottom: 0; }
+  #panel-ia .setting-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 7px;
+  }
+  #panel-ia .setting-head strong { font-size: 11px; }
+  #panel-ia .setting-head span { color: var(--pi-muted); font-size: 9px; }
+  #panel-ia .switch {
+    width: 25px;
+    height: 14px;
+    border-radius: 999px;
+    background: var(--pi-green);
+    position: relative;
+  }
+  #panel-ia .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--pi-panel);
+  }
+  #panel-ia .approval {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 11px;
+    margin-top: 15px;
+  }
+  #panel-ia .approval button {
+    padding: 12px;
+    border: 1px solid var(--pi-line);
+    border-radius: 11px;
+    background: transparent;
+    color: var(--pi-text);
+    text-align: left;
+    cursor: pointer;
+  }
+  #panel-ia .approval button.is-selected {
+    border-color: var(--pi-purple);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pi-purple) 22%, transparent);
+  }
+  #panel-ia .approval strong { display: block; margin-bottom: 3px; }
+  #panel-ia .approval span { color: var(--pi-muted); font-size: 11px; }
+  @media (max-width: 840px) {
+    #panel-ia .stage { grid-template-columns: 1fr; padding: 17px; }
+    #panel-ia .ownership { display: none; }
+    #panel-ia .panel-window { max-width: 380px; margin: 0 auto; }
+  }
+  @media (max-width: 480px) {
+    #panel-ia .approval { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div id="panel-ia">
+  <h2>Il pannello per le operazioni complesse</h2>
+  <p class="subtitle">Dimensione reale prevista: 380 × 640. Esplora le quattro viste per vedere dove finiscono i P0.</p>
+
+  <div class="view-switcher" aria-label="Vista del pannello">
+    <button class="view-btn" type="button" data-view="prepare" aria-pressed="true">Prepara</button>
+    <button class="view-btn" type="button" data-view="history" aria-pressed="false">Registro</button>
+    <button class="view-btn" type="button" data-view="stats" aria-pressed="false">Statistiche</button>
+    <button class="view-btn" type="button" data-view="settings" aria-pressed="false">Impostazioni</button>
+  </div>
+
+  <div class="stage">
+    <div class="ownership">
+      <span class="ownership-title">Resta sul buddy</span>
+      <strong>Azioni frequenti</strong>
+      <div class="ownership-list">
+        <span class="ownership-row"><span class="ownership-dot"></span> Avvia ultimo preset</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Pausa e riprendi</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Estendi di 5 minuti</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Cattura interruzione</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Concludi e scegli pausa</span>
+      </div>
+      <span class="arrow">Nessun pannello per queste azioni →</span>
+    </div>
+
+    <div class="panel-window">
+      <div class="window-bar"><span class="window-brand"><span class="brand-mark"></span> Win Buddy</span><span>— □ ×</span></div>
+      <div class="main-tabs" id="pi-main-tabs">
+        <button type="button">Aperte</button>
+        <button type="button">Archivio</button>
+        <button type="button" data-main="focus" class="active">Focus</button>
+        <button type="button" data-main="settings">Impostazioni</button>
+      </div>
+
+      <div class="panel-content" data-panel="prepare">
+        <div class="panel-heading"><div><h3>Prepara il focus</h3><p>Le scelte dettagliate, prima di partire.</p></div><span class="context-pill">Buddy pronto</span></div>
+        <div class="sub-tabs"><span class="active">Sessione</span><span>Registro</span><span>Statistiche</span></div>
+
+        <label class="section-label" for="pi-intention">Risultato della sessione</label>
+        <input class="field" id="pi-intention" value="Chiudere la struttura del report" aria-label="Risultato della sessione">
+
+        <span class="section-label">Ritmo</span>
+        <div class="preset-grid">
+          <div class="preset active"><strong>Classico</strong><span>25 focus · 5 pausa</span></div>
+          <div class="preset"><strong>Deep work</strong><span>50 focus · 10 pausa</span></div>
+          <div class="preset"><strong>Micro-start</strong><span>5 minuti, poi scegli</span></div>
+          <div class="preset"><strong>Flowtime</strong><span>Cronometro libero</span></div>
+        </div>
+
+        <span class="section-label">Piano</span>
+        <div class="two-fields"><div class="compact-field"><span>Stima</span><strong>2 sessioni</strong></div><div class="compact-field"><span>Pausa lunga</span><strong>Dopo questo ciclo</strong></div></div>
+        <div class="protection" style="margin-top:8px"><strong>Protezione Windows</strong><span>DND + promemoria accodati ›</span></div>
+        <button class="primary-action" type="button" style="margin-top:10px">Avvia focus dettagliato</button>
+
+        <span class="section-label">Coda focus</span>
+        <div class="queue">
+          <div class="queue-row"><div><strong>Rivedere i rischi tecnici</strong><span>Prossima · Deep work</span></div><button class="row-action" type="button">Modifica</button></div>
+          <div class="queue-row"><div><strong>Preparare la demo</strong><span>Dopo · Classico</span></div><button class="row-action" type="button">Modifica</button></div>
+        </div>
+      </div>
+
+      <div class="panel-content" data-panel="history" hidden>
+        <div class="panel-heading"><div><h3>Registro</h3><p>Correggi e comprendi le sessioni reali.</p></div><span class="context-pill">Oggi</span></div>
+        <div class="sub-tabs"><span>Sessione</span><span class="active">Registro</span><span>Statistiche</span></div>
+        <div class="summary-grid">
+          <div class="summary-item"><span>Focus reale</span><strong>1h 12</strong></div>
+          <div class="summary-item"><span>Sessioni</span><strong>3</strong></div>
+          <div class="summary-item"><span>Interruzioni</span><strong>2</strong></div>
+        </div>
+        <span class="section-label">2 settembre</span>
+        <div class="history">
+          <div class="history-row"><div><strong>11:14 · Struttura del report</strong><span>27 min reali · stima 25 · 1 cattura</span></div><span class="status">Completata</span></div>
+          <div class="history-row"><div><strong>10:22 · Analisi concorrenti</strong><span>21 min reali · pausa 4 min</span></div><span class="status partial">Parziale</span></div>
+          <div class="history-row"><div><strong>09:30 · Ricerca fonti</strong><span>24 min reali · stima 25</span></div><span class="status">Completata</span></div>
+        </div>
+        <span class="section-label">Azioni</span>
+        <div class="two-fields"><button class="secondary-action" type="button">Aggiungi manualmente</button><button class="secondary-action" type="button">Modifica selezionata</button></div>
+        <button class="primary-action" type="button" style="margin-top:8px">Esporta CSV / JSON</button>
+      </div>
+
+      <div class="panel-content" data-panel="stats" hidden>
+        <div class="panel-heading"><div><h3>Statistiche</h3><p>Tempo reale, stime e distribuzione.</p></div><span class="context-pill">Questa settimana</span></div>
+        <div class="sub-tabs"><span>Sessione</span><span>Registro</span><span class="active">Statistiche</span></div>
+        <div class="summary-grid">
+          <div class="summary-item"><span>Focus</span><strong>6h 40</strong></div>
+          <div class="summary-item"><span>Completate</span><strong>82%</strong></div>
+          <div class="summary-item"><span>Stima</span><strong>+8%</strong></div>
+        </div>
+        <span class="section-label">Minuti di focus reale</span>
+        <div class="chart" aria-label="Focus settimanale: lunedì 70, martedì 95, mercoledì 45, giovedì 110, venerdì 80 minuti">
+          <div class="bar-wrap"><div class="bar" style="height:58%"></div><span>L</span></div>
+          <div class="bar-wrap"><div class="bar" style="height:79%"></div><span>M</span></div>
+          <div class="bar-wrap"><div class="bar" style="height:38%"></div><span>M</span></div>
+          <div class="bar-wrap"><div class="bar" style="height:92%"></div><span>G</span></div>
+          <div class="bar-wrap"><div class="bar" style="height:67%"></div><span>V</span></div>
+          <div class="bar-wrap"><div class="bar" style="height:5%"></div><span>S</span></div>
+          <div class="bar-wrap"><div class="bar" style="height:5%"></div><span>D</span></div>
+        </div>
+        <div class="legend-line"><span>Previsto 6h 10</span><strong>Reale 6h 40</strong></div>
+        <span class="section-label">Per etichetta</span>
+        <div class="category-bar" aria-label="Report 52%, ricerca 31%, amministrazione 17%"><span></span><span></span><span></span></div>
+        <div class="legend-line"><span>Report 52%</span><span>Ricerca 31%</span><span>Altro 17%</span></div>
+        <button class="primary-action" type="button">Esporta periodo</button>
+      </div>
+
+      <div class="panel-content" data-panel="settings" hidden>
+        <div class="panel-heading"><div><h3>Impostazioni Focus</h3><p>Configurazione rara, raccolta per tema.</p></div></div>
+        <div class="settings-list">
+          <div class="setting-group"><div class="setting-head"><strong>Preset e durate</strong><span>4 preset ›</span></div><div class="setting-row"><div><strong>Classico</strong><span>25 focus · 5 pausa · lunga 20</span></div><button class="row-action" type="button">Modifica</button></div></div>
+          <div class="setting-group"><div class="setting-head"><strong>Avanzamento del ciclo</strong><span>›</span></div><div class="setting-row"><div><strong>Avvia automaticamente la pausa</strong><span>Il focus successivo resta manuale</span></div><span class="switch" aria-label="Attivo"></span></div></div>
+          <div class="setting-group"><div class="setting-head"><strong>Protezione Windows</strong><span>›</span></div><div class="setting-row"><div><strong>DND durante il focus</strong><span>Ripristina lo stato precedente alla fine</span></div><span class="switch" aria-label="Attivo"></span></div></div>
+          <div class="setting-group"><div class="setting-head"><strong>Avvisi</strong><span>Suono + visuale ›</span></div><div class="setting-row"><div><strong>Preavviso conclusione</strong><span>2 minuti prima</span></div><button class="row-action" type="button">Prova</button></div></div>
+          <div class="setting-group"><div class="setting-head"><strong>Accessibilità</strong><span>›</span></div><div class="setting-row"><div><strong>Movimento ridotto</strong><span>Segue Windows</span></div><span class="switch" aria-label="Attivo"></span></div></div>
+          <div class="setting-group"><div class="setting-head"><strong>Dati</strong><span>Locale ›</span></div><div class="two-fields"><button class="secondary-action" type="button">Backup</button><button class="secondary-action" type="button">Ripristina</button></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ownership panel-side">
+      <span class="ownership-title">Vive nel pannello</span>
+      <strong>Scelte e revisione</strong>
+      <div class="ownership-list">
+        <span class="ownership-row"><span class="ownership-dot"></span> Intenzione e stima</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Preset e automazioni</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Correzione dello storico</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> Statistiche ed export</span>
+        <span class="ownership-row"><span class="ownership-dot"></span> DND, avvisi e accessibilità</span>
+      </div>
+      <span class="arrow">← Tutto ciò che richiede attenzione</span>
+    </div>
+  </div>
+
+  <div class="approval">
+    <button type="button" data-choice="gerarchia-approvata" onclick="toggleSelect(this)"><strong>Gerarchia corretta</strong><span>Focus contiene Prepara, Registro e Statistiche; Impostazioni conserva la configurazione.</span></button>
+    <button type="button" data-choice="configurazione-in-focus" onclick="toggleSelect(this)"><strong>Configurazione dentro Focus</strong><span>Preset, automazioni e protezione diventano una quarta sottovista del tab Focus.</span></button>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const root = document.getElementById('panel-ia');
+    const viewButtons = root.querySelectorAll('.view-btn');
+    const panels = root.querySelectorAll('[data-panel]');
+    const focusTab = root.querySelector('[data-main="focus"]');
+    const settingsTab = root.querySelector('[data-main="settings"]');
+
+    function showView(name) {
+      panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== name; });
+      viewButtons.forEach((button) => { button.setAttribute('aria-pressed', String(button.dataset.view === name)); });
+      const settings = name === 'settings';
+      focusTab.classList.toggle('active', !settings);
+      settingsTab.classList.toggle('active', settings);
+    }
+
+    viewButtons.forEach((button) => button.addEventListener('click', () => showView(button.dataset.view)));
+    showView('prepare');
+  })();
+</script>

@@ -12,9 +12,59 @@
 
     <!-- barra rapida: compare al passaggio del mouse sulla creatura -->
     <div id="quickbar" class="quickbar">
+      <button
+        type="button"
+        id="qbMove"
+        class="drag-handle"
+        title="Sposta il buddy: trascina o usa le frecce"
+        aria-label="Sposta il buddy: trascina o usa i tasti freccia"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v18M3 12h18M12 3l-3 3m3-3 3 3M12 21l-3-3m3 3 3-3M3 12l3-3m-3 3 3 3M21 12l-3-3m3 3-3 3" />
+        </svg>
+      </button>
       <button type="button" id="qbNote" title="Nuova nota (Ctrl+Alt+Spazio)">✎</button>
       <button type="button" id="qbPomo" class="go" title="Avvia un focus">▶</button>
       <button type="button" id="qbPanel" title="Apri il pannello">☰</button>
+      <button
+        type="button"
+        id="qbScale"
+        title="Ridimensiona il buddy"
+        aria-label="Ridimensiona il buddy"
+        aria-controls="scalePopover"
+        aria-expanded="false"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8 3H3v5M16 21h5v-5M3 8l6-6M21 16l-6 6" />
+        </svg>
+      </button>
+    </div>
+
+    <div
+      id="scalePopover"
+      class="scale-popover"
+      role="group"
+      aria-label="Dimensione del buddy"
+      hidden
+      inert
+    >
+      <div class="scale-head">
+        <span>Dimensione</span>
+        <output id="quickScaleVal" for="quickScale">100%</output>
+      </div>
+      <div class="scale-controls">
+        <button type="button" id="scaleDown" aria-label="Riduci dimensione">−</button>
+        <input
+          type="range"
+          id="quickScale"
+          min="50"
+          max="200"
+          step="10"
+          value="100"
+          aria-label="Dimensione del buddy in percentuale"
+        />
+        <button type="button" id="scaleUp" aria-label="Aumenta dimensione">+</button>
+      </div>
     </div>
 
     <!-- modalità sobria: una pillola, nessun canvas (§ 9.3) -->

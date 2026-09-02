@@ -18,11 +18,17 @@
  * invece il riposo è la verticale, sempre, qualunque rig ci sia sotto (v.
  * UPRIGHT in `skinned.ts`): `z` è annuire, `x` è piegarsi di lato.
  *
- * Sono scritti per un umanoide qualunque, non per Roberto: il prossimo
- * modello importato eredita la stessa libreria e sceglie quali usare. Uno
- * slot che quel modello non ha — le gambe di Roberto 2.0, per dire — è una
- * riga che non fa niente, non un errore; ma un gesto che si regge *solo* su
- * quello slot non si vede più, e va scritto perché regga anche senza.
+ * Sono scritti per un umanoide qualunque, non per Roberto: ogni modello
+ * importato con braccia e busto eredita la stessa libreria e sceglie quali
+ * usare. Uno slot che quel modello non ha — le gambe di Roberto 2.0, per dire
+ * — è una riga che non fa niente, non un errore; ma un gesto che si regge
+ * *solo* su quello slot non si vede più, e va scritto perché regga anche
+ * senza.
+ *
+ * Sotto una certa soglia però non basta più scriverli bene: un corpo senza
+ * braccia non ha niente con cui salutare, e quasi tutto quello che c'è qui
+ * dentro diventa invisibile. Le creature alate hanno perciò una libreria
+ * sorella, `gestures-alato.ts`, che condivide `key()` e `mix()` e non altro.
  */
 
 import type { Gesture, PoseSink } from "./skinned";
@@ -46,7 +52,8 @@ export function key(u: number, pts: readonly (readonly [number, number])[]): num
   return pts[pts.length - 1][1];
 }
 
-const mix = (a: number, b: number, u: number): number => a + (b - a) * u;
+/** Interpolazione lineare secca, per far viaggiare una posa fra due estremi. */
+export const mix = (a: number, b: number, u: number): number => a + (b - a) * u;
 
 /** Le braccia lungo i fianchi: il punto da cui partono e a cui tornano. */
 const DOWN = { x: 0.42, y: -0.9, z: 0.06 };

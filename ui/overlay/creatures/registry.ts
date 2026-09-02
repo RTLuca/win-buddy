@@ -1,12 +1,18 @@
 /**
- * Il bestiario (§ 9). Sei creature procedurali — tutte fluttuano, nessuna ha
- * le gambe: niente walk cycle, niente contatto col terreno — più gli ospiti
- * importati, che le gambe ce l'hanno e stanno in piedi sulla pedana.
+ * Il bestiario (§ 9). Cinque creature procedurali — tutte fluttuano, nessuna
+ * ha le gambe: niente walk cycle, niente contatto col terreno — più gli ospiti
+ * importati, che sono scolpiti fuori e animati per pose.
  *
- * Questo registro è l'unico punto che cambia quando se ne aggiunge una:
- * nessuno switch sparso nel resto dell'applicazione. Le due famiglie stanno
- * dietro allo stesso contratto a quattro metodi, quindi `scene.ts` non sa
- * nemmeno quale delle due sta montando.
+ * Cotone era la sesta procedurale ed è passato di famiglia: dov'era il suo
+ * costruttore adesso c'è un GLB, e `cotone.ts` è la mappa che lo anima. Il
+ * pupazzo di sfere e coni resta nella storia di git, che è dove va a stare
+ * quello che è servito e non serve più.
+ *
+ * Questo registro è l'unico punto che cambia quando se ne aggiunge una, o
+ * quando una cambia famiglia: nessuno switch sparso nel resto
+ * dell'applicazione. Le due famiglie stanno dietro allo stesso contratto a
+ * quattro metodi, quindi `scene.ts` non sa nemmeno quale delle due sta
+ * montando.
  */
 
 import {
@@ -25,6 +31,7 @@ import {
 import { CREATURE_META, type Buddy, type BuddyMeta } from "../../shared/contracts";
 import { ProceduralBuddy, type Builder, type Parts } from "./base";
 import { INK, type Palette } from "./helpers";
+import { COTONE } from "./cotone";
 import { ROBERTO } from "./roberto";
 import { SkinnedBuddy, type SkinnedSpec } from "./skinned";
 
@@ -67,62 +74,6 @@ const buildLume: Builder = (c, kit) => {
   p.flame.position.set(1.5, 0.5, 0);
   p.flame.scale.y = 1.6;
   p.orbit.add(p.flame);
-
-  return { group: g, parts: p };
-};
-
-// ---------------------------------------------------------------- Cotone
-
-const buildCotone: Builder = (c, kit) => {
-  const g = new Group();
-  const p: Parts = {};
-
-  p.body = kit.part(new SphereGeometry(1.05, 32, 24), kit.toon(c.body), 0, -0.15, 0);
-  p.body.scale.set(1.05, 0.95, 1);
-  g.add(p.body);
-
-  p.head = new Group();
-  p.head.position.set(0, 0.62, 0.16);
-  g.add(p.head);
-
-  const snout = kit.part(new SphereGeometry(0.42, 20, 16), kit.toon(c.body), 0, -0.12, 0.72);
-  snout.scale.set(1, 0.78, 1.05);
-  p.head.add(snout);
-
-  p.eyeL = kit.eyeball(0.19);
-  p.eyeL.position.set(-0.32, 0.16, 0.6);
-  p.head.add(p.eyeL);
-  p.eyeR = kit.eyeball(0.19);
-  p.eyeR.position.set(0.32, 0.16, 0.6);
-  p.head.add(p.eyeR);
-
-  const hornL = kit.part(new ConeGeometry(0.11, 0.4, 12), kit.toon(c.accent), -0.34, 0.62, -0.06);
-  hornL.rotation.z = 0.32;
-  const hornR = kit.part(new ConeGeometry(0.11, 0.4, 12), kit.toon(c.accent), 0.34, 0.62, -0.06);
-  hornR.rotation.z = -0.32;
-  p.head.add(hornL, hornR);
-
-  p.wingL = kit.part(new ConeGeometry(0.5, 0.95, 4), kit.toon(c.accent), -1.0, 0.2, -0.25);
-  p.wingL.rotation.set(0, 0, 1.5);
-  p.wingL.scale.set(1, 1, 0.35);
-  p.wingR = kit.part(new ConeGeometry(0.5, 0.95, 4), kit.toon(c.accent), 1.0, 0.2, -0.25);
-  p.wingR.rotation.set(0, 0, -1.5);
-  p.wingR.scale.set(1, 1, 0.35);
-  g.add(p.wingL, p.wingR);
-
-  p.tail = [];
-  const sizes = [0.3, 0.24, 0.18, 0.12];
-  sizes.forEach((s, i) => {
-    const seg = kit.part(new SphereGeometry(s, 16, 12), kit.toon(c.body), 0, 0, -(0.85 + i * 0.34));
-    g.add(seg);
-    p.tail!.push(seg);
-  });
-
-  // organo di stato: un alone sotto la pancia, invisibile ma leggibile
-  p.halo = new Mesh(kit.geo(new TorusGeometry(0.78, 0.045, 8, 30)), kit.flat(c.glow));
-  p.halo.rotation.x = Math.PI / 2;
-  p.halo.position.y = -1.28;
-  g.add(p.halo);
 
   return { group: g, parts: p };
 };
@@ -364,7 +315,6 @@ const buildOttone: Builder = (c, kit) => {
 
 const BUILDERS: Record<string, Entry> = {
   lume: { palette: { body: 0x7b6bd6, accent: 0xffd98a, glow: 0xf2b441 }, build: buildLume },
-  cotone: { palette: { body: 0xe8ecf5, accent: 0x7fb8e8, glow: 0x9bd4f5 }, build: buildCotone },
   bolete: { palette: { body: 0xe0d6c4, accent: 0xc4543f, glow: 0x57a98b }, build: buildBolete },
   quarzo: { palette: { body: 0x5fc8c0, accent: 0xb8f0eb, glow: 0x57a98b }, build: buildQuarzo },
   brace: { palette: { body: 0xd9603f, accent: 0xf2b441, glow: 0xf2b441 }, build: buildBrace },
@@ -373,8 +323,19 @@ const BUILDERS: Record<string, Entry> = {
 
 /** Gli ospiti importati: un GLB scolpito fuori e animato per pose (§ 9.2). */
 const SKINNED: Record<string, SkinnedSpec> = {
+  cotone: COTONE,
   roberto: ROBERTO,
 };
+
+/**
+ * Chi si monta quando l'id non si riconosce.
+ *
+ * Era Cotone, e non può più esserlo: da quando è un GLB, montarlo significa
+ * scaricare sei megabyte. Un id sconosciuto è già un errore, e la risposta a
+ * un errore non deve costare più della cosa giusta — Lume è procedurale e
+ * compare all'istante.
+ */
+const FALLBACK = "lume";
 
 export function listBuddies(): BuddyMeta[] {
   return CREATURE_META;
@@ -385,7 +346,7 @@ export function hasBuddy(id: string): boolean {
 }
 
 export function createBuddy(id: string): Buddy {
-  const safe = hasBuddy(id) ? id : "cotone";
+  const safe = hasBuddy(id) ? id : FALLBACK;
   const meta = CREATURE_META.find((m) => m.id === safe)!;
   const skin = SKINNED[safe];
   if (skin) return new SkinnedBuddy(meta, skin);

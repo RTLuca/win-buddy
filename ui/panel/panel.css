@@ -357,6 +357,48 @@ button.ghost:hover {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+.position-reset-row > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.position-reset-row small {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.position-reset-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-status {
+  min-width: 34px;
+  color: var(--moss);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-align: right;
+}
+
+.inline-status.error {
+  color: var(--amber);
+}
+
+button.ghost.compact {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+button.ghost.compact:active {
+  transform: scale(0.97);
+}
+
+button.ghost.compact:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .form input[type="number"] {
   width: 64px;
   background: rgba(255, 255, 255, 0.05);

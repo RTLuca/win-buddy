@@ -296,6 +296,22 @@ impl Store {
         Ok(())
     }
 
+    /// Aggiorna più impostazioni come un'unica unità. È usato per la
+    /// posizione manuale, dove coordinate, monitor e modalità devono restare
+    /// coerenti anche in caso di arresto tra due scritture.
+    pub fn set_settings(&self, settings: &[(&str, &str)]) -> Result<()> {
+        let transaction = self.conn.unchecked_transaction()?;
+        for (key, value) in settings {
+            transaction.execute(
+                "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn setting_i64(&self, key: &str, default: i64) -> i64 {
         self.setting(key)
             .ok()
@@ -482,5 +498,34 @@ mod tests {
         let s = store();
         s.set_setting("buddy.creature", "brace").unwrap();
         assert_eq!(s.setting("buddy.creature").unwrap().unwrap(), "brace");
+    }
+
+    #[test]
+    fn settings_batch_is_committed_atomically() {
+        let s = store();
+        s.set_settings(&[
+            ("overlay.position.x", "0.250000"),
+            ("overlay.position.y", "0.750000"),
+            ("overlay.monitor", "name:DISPLAY2"),
+            ("overlay.position.mode", "manual"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            s.setting("overlay.position.x").unwrap().as_deref(),
+            Some("0.250000")
+        );
+        assert_eq!(
+            s.setting("overlay.position.y").unwrap().as_deref(),
+            Some("0.750000")
+        );
+        assert_eq!(
+            s.setting("overlay.monitor").unwrap().as_deref(),
+            Some("name:DISPLAY2")
+        );
+        assert_eq!(
+            s.setting("overlay.position.mode").unwrap().as_deref(),
+            Some("manual")
+        );
     }
 }
