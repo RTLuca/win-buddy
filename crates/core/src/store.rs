@@ -36,10 +36,16 @@ fn session_from_row(row: &Row) -> rusqlite::Result<PomodoroSession> {
         id: row.get("id")?,
         kind: SessionKind::parse(&kind).unwrap_or(SessionKind::Focus),
         started_at: row.get("started_at")?,
-        ends_at: row.get("ends_at")?,
-        outcome: outcome.as_deref().and_then(SessionOutcome::parse),
+        ends_at: row.get("deadline_at")?,
+        outcome: outcome.as_deref().and_then(|value| {
+            if value == "interrupted" {
+                Some(SessionOutcome::Aborted)
+            } else {
+                SessionOutcome::parse(value)
+            }
+        }),
         resolved_at: row.get("resolved_at")?,
-        label: row.get("label")?,
+        label: row.get("intention")?,
     })
 }
 
@@ -54,10 +60,11 @@ impl Store {
         Self::init(conn)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        crate::migrations::apply(&mut conn)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Store { conn })
     }
@@ -215,8 +222,9 @@ impl Store {
         label: Option<&str>,
     ) -> Result<PomodoroSession> {
         self.conn.execute(
-            "INSERT INTO pomodoro_sessions(kind, started_at, ends_at, label)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO pomodoro_sessions(
+               kind, phase, started_at, deadline_at, intention, planned_duration_ms
+             ) VALUES (?1, 'running', ?2, ?3, COALESCE(?4, ''), ?3 - ?2)",
             params![kind.as_str(), started_at, ends_at, label],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -227,7 +235,8 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT * FROM pomodoro_sessions WHERE id = ?1",
+                "SELECT id,kind,started_at,deadline_at,outcome,resolved_at,intention
+                 FROM pomodoro_sessions WHERE id = ?1",
                 [id],
                 session_from_row,
             )
@@ -237,7 +246,8 @@ impl Store {
     /// Sessioni senza esito, da risolvere all'avvio o alla ripresa (§ 8.3).
     pub fn open_sessions(&self) -> Result<Vec<PomodoroSession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT * FROM pomodoro_sessions WHERE outcome IS NULL ORDER BY started_at",
+            "SELECT id,kind,started_at,deadline_at,outcome,resolved_at,intention
+             FROM pomodoro_sessions WHERE outcome IS NULL ORDER BY started_at",
         )?;
         let rows = stmt.query_map([], session_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -245,7 +255,9 @@ impl Store {
 
     pub fn resolve_session(&self, id: i64, outcome: SessionOutcome, now: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE pomodoro_sessions SET outcome = ?2, resolved_at = ?3
+            "UPDATE pomodoro_sessions
+             SET outcome = CASE ?2 WHEN 'aborted' THEN 'interrupted' ELSE ?2 END,
+                 phase = 'closed', resolved_at = ?3
              WHERE id = ?1 AND outcome IS NULL",
             params![id, outcome.as_str(), now],
         )?;
@@ -267,7 +279,8 @@ impl Store {
     /// un'interruzione nasconderebbe un'informazione vera (§ 6.3).
     pub fn session_history(&self, limit: i64) -> Result<Vec<PomodoroSession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT * FROM pomodoro_sessions WHERE outcome IS NOT NULL
+            "SELECT id,kind,started_at,deadline_at,outcome,resolved_at,intention
+             FROM pomodoro_sessions WHERE outcome IS NOT NULL
              ORDER BY started_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map([limit], session_from_row)?;
@@ -352,7 +365,7 @@ mod tests {
     #[test]
     fn schema_applies_and_settings_seeded() {
         let s = store();
-        assert_eq!(s.setting("schema.version").unwrap().unwrap(), "1");
+        assert_eq!(s.setting("schema.version").unwrap().unwrap(), "2");
         assert_eq!(s.setting_i64("pomodoro.focus_min", 0), 25);
         assert_eq!(s.setting_i64("pomodoro.stale_sec", 0), 120);
     }

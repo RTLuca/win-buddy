@@ -6,6 +6,7 @@
 
 pub mod dnd;
 pub mod events;
+pub(crate) mod migrations;
 pub mod model;
 pub mod parse;
 pub mod pomodoro;
