@@ -14,7 +14,9 @@ use std::sync::atomic::Ordering;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use win_buddy_core::events::{BubbleShow, HitBox, StateChanged, EVT_NOTES_CHANGED};
-use win_buddy_core::model::{Note, NoteState, PomodoroSession, SessionKind};
+use win_buddy_core::model::{
+    Note, NoteState, PomodoroSession, SessionKind, SessionOutcome, StartSession,
+};
 use win_buddy_core::parse;
 use win_buddy_core::pomodoro::{self, PomodoroConfig};
 
@@ -271,7 +273,18 @@ pub fn do_pomodoro_start(
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        pomodoro::start(&store, kind, label, now_ms(), &cfg).map_err(err)?;
+        let now = now_ms();
+        if kind == SessionKind::Focus {
+            let preset_id = store.default_preset().map_err(err)?.id;
+            let request = StartSession::focus(
+                preset_id,
+                label.unwrap_or_default(),
+                cfg.duration_ms(SessionKind::Focus),
+            );
+            pomodoro::start(&store, request, now).map_err(err)?;
+        } else {
+            pomodoro::start_break(&store, kind, cfg.duration_ms(kind), now).map_err(err)?;
+        }
     }
     *app.state::<AppState>().break_prompt.lock().unwrap() = None;
     presenter::sync(app);
@@ -283,7 +296,17 @@ pub fn do_pomodoro_abort(app: &AppHandle) -> CmdResult<PomodoroStatusDto> {
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        pomodoro::abort(&store, now_ms()).map_err(err)?;
+        if let Some(session) = store.open_session().map_err(err)? {
+            pomodoro::finish(
+                &store,
+                session.id,
+                session.transition_revision,
+                SessionOutcome::Interrupted,
+                None,
+                now_ms(),
+            )
+            .map_err(err)?;
+        }
     }
     presenter::sync(app);
     pomodoro_status_dto(app)
@@ -325,7 +348,7 @@ pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        pomodoro::start(&store, kind, None, now_ms(), &cfg).map_err(err)?;
+        pomodoro::start_break(&store, kind, cfg.duration_ms(kind), now_ms()).map_err(err)?;
     }
     presenter::sync(&app);
     pomodoro_status_dto(&app)

@@ -17,6 +17,14 @@ pub struct Store {
     conn: Connection,
 }
 
+pub(crate) struct SessionAdjustment {
+    pub phase: SessionPhase,
+    pub deadline_at: i64,
+    pub paused_remaining_ms: Option<i64>,
+    pub adjusted_at: i64,
+    pub close_open_pause: bool,
+}
+
 fn note_from_row(row: &Row) -> rusqlite::Result<Note> {
     let state: String = row.get("state")?;
     Ok(Note {
@@ -426,6 +434,118 @@ impl Store {
             .query_map([], session_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter().map(decode_session).collect()
+    }
+
+    /// Transizione atomica `Running -> Paused`: apre l'intervallo tecnico e
+    /// incrementa la revisione una sola volta.
+    pub(crate) fn pause_session(
+        &self,
+        id: i64,
+        expected_revision: i64,
+        paused_at: i64,
+        reason: Option<&str>,
+    ) -> Result<PomodoroSession> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE pomodoro_sessions
+             SET phase = 'paused',
+                 paused_remaining_ms = MAX(deadline_at - ?3, 0),
+                 transition_revision = transition_revision + 1
+             WHERE id = ?1 AND transition_revision = ?2
+               AND kind = 'focus' AND phase = 'running' AND outcome IS NULL",
+            params![id, expected_revision, paused_at],
+        )?;
+        if changed != 1 {
+            return Err(session_already_updated());
+        }
+        transaction
+            .execute(
+                "INSERT INTO pomodoro_pause_intervals(session_id,started_at,reason)
+                 VALUES (?1,?2,?3)",
+                params![id, paused_at, reason],
+            )
+            .map_err(invalid_session_write)?;
+        transaction.commit()?;
+        self.get_session(id)?
+            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))
+    }
+
+    /// Transizione atomica `Paused -> Running`: chiude l'intervallo tecnico,
+    /// ripristina la deadline dal residuo congelato e revisiona una volta.
+    pub(crate) fn resume_session(
+        &self,
+        id: i64,
+        expected_revision: i64,
+        resumed_at: i64,
+        deadline_at: i64,
+    ) -> Result<PomodoroSession> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE pomodoro_sessions
+             SET phase = 'running', deadline_at = ?3,
+                 paused_remaining_ms = NULL,
+                 transition_revision = transition_revision + 1
+             WHERE id = ?1 AND transition_revision = ?2
+               AND kind = 'focus' AND phase = 'paused' AND outcome IS NULL",
+            params![id, expected_revision, deadline_at],
+        )?;
+        if changed != 1 {
+            return Err(session_already_updated());
+        }
+        let pause_changed = transaction.execute(
+            "UPDATE pomodoro_pause_intervals SET ended_at = ?2
+             WHERE session_id = ?1 AND ended_at IS NULL AND started_at <= ?2",
+            params![id, resumed_at],
+        )?;
+        if pause_changed != 1 {
+            return Err(CoreError::InvalidState("pausa non aperta".into()));
+        }
+        transaction.commit()?;
+        self.get_session(id)?
+            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))
+    }
+
+    /// Corregge durata e fase come una singola mutazione CAS. Quando una
+    /// correzione porta una sessione in pausa a `ReadyToClose`, chiude anche
+    /// l'intervallo aperto nello stesso transaction boundary.
+    pub(crate) fn adjust_session(
+        &self,
+        id: i64,
+        expected_revision: i64,
+        adjustment: SessionAdjustment,
+    ) -> Result<PomodoroSession> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE pomodoro_sessions
+             SET phase = ?3, deadline_at = ?4, paused_remaining_ms = ?5,
+                 edited_at = ?6,
+                 transition_revision = transition_revision + 1
+             WHERE id = ?1 AND transition_revision = ?2 AND outcome IS NULL",
+            params![
+                id,
+                expected_revision,
+                adjustment.phase.as_str(),
+                adjustment.deadline_at,
+                adjustment.paused_remaining_ms,
+                adjustment.adjusted_at,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(session_already_updated());
+        }
+        if adjustment.close_open_pause {
+            let pause_changed = transaction.execute(
+                "UPDATE pomodoro_pause_intervals SET ended_at = ?2
+                 WHERE session_id = ?1 AND ended_at IS NULL AND started_at <= ?2",
+                params![id, adjustment.adjusted_at],
+            )?;
+            if pause_changed != 1 {
+                return Err(CoreError::InvalidState("pausa non aperta".into()));
+            }
+        }
+        transaction.commit()?;
+        self.get_session(id)?
+            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))
     }
 
     #[allow(dead_code)] // Primitive interna; Task 3 la compone in una transazione di dominio.

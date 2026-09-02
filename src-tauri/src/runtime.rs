@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use win_buddy_core::dnd::DndLevel;
-use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent};
+use win_buddy_core::pomodoro::{self, EventKind, PomodoroConfig, PomodoroEvent};
 use win_buddy_core::scheduler::{self, RESUME_GAP_MS, TICK_MS};
 
 use crate::platform;
@@ -100,9 +100,8 @@ pub fn do_tick(app: &AppHandle) {
 
     let (out, pomo_events) = {
         let store = state.store.lock().unwrap();
-        let cfg = PomodoroConfig::load(&store);
         let out = scheduler::tick(&store, now);
-        let ev = pomodoro::tick(&store, now, day_start_ms(), &cfg);
+        let ev = pomodoro::tick(&store, now);
         (out.unwrap_or_else(|_| scheduler::TickOutcome { newly_fired: vec![], arm_timer_ms: None }),
          ev.unwrap_or_default())
     };
@@ -152,33 +151,20 @@ fn handle_pomodoro_events(app: &AppHandle, events: &[PomodoroEvent]) {
     // in DND nascosto niente toast (§ 10.3)
     let toast_ok = presenter::effective_dnd(app).policy().toast_allowed;
     for ev in events {
-        match ev {
-            PomodoroEvent::FocusCompleted { proposed_break, .. } => {
-                state
-                    .celebrating_until
-                    .store(now_ms() + 6_000, Ordering::Relaxed);
-                *state.break_prompt.lock().unwrap() = Some(*proposed_break);
-                // il festeggiamento è un'interazione: tiene sveglio l'overlay
+        match ev.kind {
+            EventKind::ReadyToClose => {
                 state.last_interaction.store(now_ms(), Ordering::Relaxed);
                 if toast_ok && surfaces::overlay(app).is_none() {
-                    presenter::toast(app, "Pomodoro chiuso", "Tempo di pausa.");
+                    presenter::toast(app, "Tempo scaduto", "Chiudi il focus o continua.");
                 }
-                // a fine festeggiamento la creatura deve tornare al suo stato
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(6_500)).await;
-                    presenter::sync(&app);
-                });
             }
-            PomodoroEvent::BreakCompleted { .. } => {
+            EventKind::ReturnPrompt => {
                 state.last_interaction.store(now_ms(), Ordering::Relaxed);
                 if toast_ok && surfaces::overlay(app).is_none() {
                     presenter::toast(app, "Pausa finita", "Si riparte quando vuoi.");
                 }
             }
-            PomodoroEvent::Resumed { .. } => {}
-            // invalidata in silenzio (§ 8.3): la creatura non annuncia nulla
-            PomodoroEvent::Invalidated { .. } => {}
+            EventKind::Prewarning | EventKind::RecoveryNeeded => {}
         }
     }
 }

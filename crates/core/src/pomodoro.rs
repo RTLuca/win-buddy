@@ -1,41 +1,30 @@
-//! Macchina a stati del pomodoro (§ 8).
+//! Macchina a stati Pomodoro.
 //!
-//! ```text
-//!         avvia
-//!  idle ─────────▶ focus ──(ends_at)──▶ break_prompt
-//!   ▲                │                        │
-//!   │                │ interrompi             │ accetta
-//!   │                ▼                        ▼
-//!   └──────────── aborted                  break ──(ends_at)──▶ idle
-//! ```
-//!
-//! Nessun contatore: lo stato si ricalcola sempre come `ends_at − now`.
-//! Le funzioni sono pure rispetto all'orologio: `now` lo inietta il chiamante.
+//! Il core decide tutte le transizioni; shell e renderer consumano snapshot ed
+//! eventi senza replicare regole. Ogni comando mutabile usa optimistic
+//! concurrency e incrementa `transition_revision` esattamente una volta.
 
-use crate::model::{PomodoroSession, SessionKind, SessionOutcome};
-use crate::store::Store;
-use crate::Result;
+use crate::model::{PomodoroSession, SessionKind, SessionOutcome, SessionPhase, StartSession};
+use crate::store::{SessionAdjustment, Store};
+use crate::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
-/// Fine avvenuta da meno di questo → si notifica normalmente (§ 8.3);
-/// da più tempo → invalidata in silenzio. Senza questa regola il buddy
-/// annuncia una pausa alle quattro del mattino, e non lo apri più.
+/// Oltre questa distanza dalla deadline non si presenta una celebrazione
+/// tardiva: la sessione resta correggibile e richiede revisione umana.
 pub const LATE_NOTIFY_MS: i64 = 5 * 60_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PomodoroConfig {
     pub focus_min: i64,
     pub short_min: i64,
     pub long_min: i64,
-    /// Ogni quante sessioni di focus la pausa proposta è lunga.
     pub long_every: i64,
-    /// Divario di inattività oltre il quale una sessione è invalidata (§ 8.3).
     pub stale_sec: i64,
 }
 
 impl PomodoroConfig {
     pub fn load(store: &Store) -> Self {
-        PomodoroConfig {
+        Self {
             focus_min: store.setting_i64("pomodoro.focus_min", 25),
             short_min: store.setting_i64("pomodoro.short_min", 5),
             long_min: store.setting_i64("pomodoro.long_min", 20),
@@ -45,178 +34,377 @@ impl PomodoroConfig {
     }
 
     pub fn duration_ms(&self, kind: SessionKind) -> i64 {
-        let min = match kind {
+        let minutes = match kind {
             SessionKind::Focus => self.focus_min,
             SessionKind::ShortBreak => self.short_min,
             SessionKind::LongBreak => self.long_min,
         };
-        min * 60_000
+        minutes * 60_000
     }
 }
 
-/// Cosa è successo alla macchina a stati: la shell li traduce in eventi
-/// verso l'overlay (stati, nuvolette) e in toast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    Prewarning,
+    ReadyToClose,
+    ReturnPrompt,
+    RecoveryNeeded,
+}
+
+impl EventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Prewarning => "prewarning",
+            Self::ReadyToClose => "ready_to_close",
+            Self::ReturnPrompt => "return_prompt",
+            Self::RecoveryNeeded => "recovery_needed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PomodoroEvent {
+    /// Task 4 sostituirà il valore effimero con l'identificatore dell'outbox.
+    pub id: i64,
+    pub session_id: i64,
+    pub kind: EventKind,
+    pub transition_revision: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PomodoroEvent {
-    /// Un focus è arrivato in fondo: si propone la pausa (breve o lunga).
-    FocusCompleted {
-        session: PomodoroSession,
-        proposed_break: SessionKind,
-    },
-    /// Una pausa è finita: si torna a idle.
-    BreakCompleted { session: PomodoroSession },
-    /// Ripresa dopo una sospensione breve: la sessione continua (§ 8.3).
-    Resumed { session: PomodoroSession },
-    /// Invalidata in silenzio: la creatura non annuncia nulla (§ 8.3).
-    Invalidated { session: PomodoroSession },
+pub struct TransitionResult {
+    pub session: PomodoroSession,
+    pub effective_focus_ms: i64,
+    pub events: Vec<PomodoroEvent>,
 }
 
-/// La sessione attiva adesso, se ce n'è una non ancora scaduta.
-pub fn active_session(store: &Store, now: i64) -> Result<Option<PomodoroSession>> {
-    Ok(store
-        .open_sessions()?
-        .into_iter()
-        .find(|s| now < s.ends_at))
+fn invalid_transition() -> CoreError {
+    CoreError::InvalidState("transizione non consentita".into())
 }
 
-/// C'è un focus in corso? (Decide se i promemoria si accodano, § 8.4.)
-pub fn focus_active(store: &Store, now: i64) -> Result<bool> {
-    Ok(active_session(store, now)?
-        .map(|s| s.kind == SessionKind::Focus)
-        .unwrap_or(false))
+fn get_session(store: &Store, id: i64) -> Result<PomodoroSession> {
+    store
+        .get_session(id)?
+        .ok_or_else(|| CoreError::InvalidState("sessione non trovata".into()))
 }
 
-/// Avvia una sessione. Se ce n'è una aperta viene interrotta: avviarne
-/// un'altra è il modo esplicito dell'utente di dire che quella vecchia
-/// non conta più.
-pub fn start(
+fn command_session(store: &Store, id: i64, expected_revision: i64) -> Result<PomodoroSession> {
+    let session = get_session(store, id)?;
+    if session.transition_revision != expected_revision {
+        return Err(CoreError::InvalidState("sessione già aggiornata".into()));
+    }
+    Ok(session)
+}
+
+fn event(session: &PomodoroSession, kind: EventKind) -> PomodoroEvent {
+    PomodoroEvent {
+        id: 0,
+        session_id: session.id,
+        kind,
+        transition_revision: session.transition_revision,
+    }
+}
+
+fn transition_result(
     store: &Store,
-    kind: SessionKind,
-    label: Option<&str>,
+    session: PomodoroSession,
     now: i64,
-    cfg: &PomodoroConfig,
-) -> Result<PomodoroSession> {
-    for open in store.open_sessions()? {
-        store.resolve_session(
-            open.id,
-            open.transition_revision,
-            SessionOutcome::Aborted,
-            now,
-        )?;
-    }
-    store.start_session(kind, now, now + cfg.duration_ms(kind), label)
-}
-
-/// Interrompe la sessione in corso, se c'è.
-pub fn abort(store: &Store, now: i64) -> Result<Option<PomodoroSession>> {
-    let open = store.open_sessions()?;
-    let current = open.into_iter().next();
-    if let Some(s) = &current {
-        store.resolve_session(
-            s.id,
-            s.transition_revision,
-            SessionOutcome::Aborted,
-            now,
-        )?;
-    }
-    Ok(current)
-}
-
-/// La pausa da proporre dopo un focus: lunga ogni `long_every` sessioni
-/// completate nella giornata civile locale. `day_start` è la mezzanotte
-/// locale in epoch ms, calcolata dal chiamante.
-pub fn proposed_break(store: &Store, day_start: i64, cfg: &PomodoroConfig) -> Result<SessionKind> {
-    let done = store.completed_focus_since(day_start)?;
-    Ok(if cfg.long_every > 0 && done > 0 && done % cfg.long_every == 0 {
-        SessionKind::LongBreak
-    } else {
-        SessionKind::ShortBreak
+    events: Vec<PomodoroEvent>,
+) -> Result<TransitionResult> {
+    Ok(TransitionResult {
+        effective_focus_ms: store.effective_focus_ms(session.id, now)?.max(0),
+        session,
+        events,
     })
 }
 
-/// Tick a macchina viva: risolve le sessioni arrivate a `ends_at`.
-pub fn tick(store: &Store, now: i64, day_start: i64, cfg: &PomodoroConfig) -> Result<Vec<PomodoroEvent>> {
-    let mut events = Vec::new();
-    for s in store.open_sessions()? {
-        if now < s.ends_at {
-            continue;
-        }
-        store.resolve_session(
-            s.id,
-            s.transition_revision,
-            SessionOutcome::Completed,
-            now,
-        )?;
-        let session = store.get_session(s.id)?.expect("appena risolta");
-        if s.kind == SessionKind::Focus {
-            let proposed = proposed_break(store, day_start, cfg)?;
-            events.push(PomodoroEvent::FocusCompleted { session, proposed_break: proposed });
-        } else {
-            events.push(PomodoroEvent::BreakCompleted { session });
-        }
-    }
-    Ok(events)
+/// La sessione aperta resta attiva anche oltre la deadline: un focus viene
+/// chiuso soltanto da una decisione esplicita dell'utente.
+pub fn active_session(store: &Store, _now: i64) -> Result<Option<PomodoroSession>> {
+    store.open_session()
 }
 
-/// Risoluzione all'avvio o alla ripresa (§ 8.3). `last_alive` è l'ultimo
-/// istante in cui l'app era certamente viva (l'ultimo battito registrato).
-///
-/// - `now < ends_at` e divario sotto soglia → la sessione riprende;
-/// - divario sopra soglia → invalidata, la creatura non annuncia nulla;
-/// - `now ≥ ends_at` ma da meno di 5 minuti → si notifica normalmente;
-/// - più tempo → invalidata in silenzio.
+pub fn focus_active(store: &Store, now: i64) -> Result<bool> {
+    Ok(active_session(store, now)?.is_some_and(|session| session.kind == SessionKind::Focus))
+}
+
+pub fn start(store: &Store, request: StartSession, now: i64) -> Result<TransitionResult> {
+    if request.kind != SessionKind::Focus || request.planned_duration_ms <= 0 {
+        return Err(invalid_transition());
+    }
+    let session = store.start_focus(request, now)?;
+    transition_result(store, session, now, vec![])
+}
+
+pub fn pause(
+    store: &Store,
+    id: i64,
+    expected_revision: i64,
+    now: i64,
+    reason: Option<&str>,
+) -> Result<TransitionResult> {
+    let current = command_session(store, id, expected_revision)?;
+    if current.kind != SessionKind::Focus || current.phase != SessionPhase::Running {
+        return Err(invalid_transition());
+    }
+    let session = store.pause_session(id, expected_revision, now, reason)?;
+    transition_result(store, session, now, vec![])
+}
+
+pub fn resume(
+    store: &Store,
+    id: i64,
+    expected_revision: i64,
+    now: i64,
+) -> Result<TransitionResult> {
+    let current = command_session(store, id, expected_revision)?;
+    if current.kind != SessionKind::Focus || current.phase != SessionPhase::Paused {
+        return Err(invalid_transition());
+    }
+    let remaining = current.paused_remaining_ms.ok_or_else(invalid_transition)?;
+    let deadline = now
+        .checked_add(remaining)
+        .ok_or_else(|| CoreError::InvalidState("durata sessione non valida".into()))?;
+    let session = store.resume_session(id, expected_revision, now, deadline)?;
+    transition_result(store, session, now, vec![])
+}
+
+pub fn adjust_duration(
+    store: &Store,
+    id: i64,
+    expected_revision: i64,
+    delta_ms: i64,
+    now: i64,
+) -> Result<TransitionResult> {
+    let current = command_session(store, id, expected_revision)?;
+    if matches!(current.phase, SessionPhase::Overtime | SessionPhase::Closed) {
+        return Err(invalid_transition());
+    }
+    let shifted = current
+        .deadline_at
+        .checked_add(delta_ms)
+        .ok_or_else(|| CoreError::InvalidState("durata sessione non valida".into()))?;
+    let deadline = shifted.max(now);
+    let phase = if deadline == now {
+        SessionPhase::ReadyToClose
+    } else if current.phase == SessionPhase::ReadyToClose {
+        SessionPhase::Running
+    } else {
+        current.phase
+    };
+    let paused_remaining_ms = if phase == SessionPhase::Paused {
+        let remaining = current.paused_remaining_ms.ok_or_else(invalid_transition)?;
+        Some(remaining.saturating_add(delta_ms).max(0))
+    } else {
+        None
+    };
+    let leaves_pause = current.phase == SessionPhase::Paused && phase != SessionPhase::Paused;
+    let session = store.adjust_session(
+        id,
+        expected_revision,
+        SessionAdjustment {
+            phase,
+            deadline_at: deadline,
+            paused_remaining_ms,
+            adjusted_at: now,
+            close_open_pause: leaves_pause,
+        },
+    )?;
+    let events = (phase == SessionPhase::ReadyToClose)
+        .then(|| event(&session, EventKind::ReadyToClose))
+        .into_iter()
+        .collect();
+    transition_result(store, session, now, events)
+}
+
+pub fn start_overtime(
+    store: &Store,
+    id: i64,
+    expected_revision: i64,
+    now: i64,
+) -> Result<TransitionResult> {
+    let current = command_session(store, id, expected_revision)?;
+    if current.kind != SessionKind::Focus || current.phase != SessionPhase::ReadyToClose {
+        return Err(invalid_transition());
+    }
+    let session = store.set_phase(id, SessionPhase::Overtime, expected_revision, now)?;
+    transition_result(store, session, now, vec![])
+}
+
+pub fn finish(
+    store: &Store,
+    id: i64,
+    expected_revision: i64,
+    outcome: SessionOutcome,
+    interruption_reason: Option<&str>,
+    now: i64,
+) -> Result<TransitionResult> {
+    let current = command_session(store, id, expected_revision)?;
+    if !matches!(
+        current.phase,
+        SessionPhase::Running
+            | SessionPhase::Paused
+            | SessionPhase::ReadyToClose
+            | SessionPhase::Overtime
+    ) || (outcome != SessionOutcome::Interrupted && interruption_reason.is_some())
+    {
+        return Err(invalid_transition());
+    }
+    let session = store.finish_session(id, expected_revision, outcome, interruption_reason, now)?;
+    transition_result(store, session, now, vec![])
+}
+
+pub fn start_break(
+    store: &Store,
+    kind: SessionKind,
+    duration_ms: i64,
+    now: i64,
+) -> Result<TransitionResult> {
+    if !kind.is_break() || duration_ms <= 0 {
+        return Err(invalid_transition());
+    }
+    let session = store.start_focus(
+        StartSession {
+            kind,
+            preset_id: None,
+            intention: String::new(),
+            category: None,
+            planned_duration_ms: duration_ms,
+            estimated_ms: None,
+            next_step: None,
+        },
+        now,
+    )?;
+    transition_result(store, session, now, vec![])
+}
+
+pub fn skip_break(
+    store: &Store,
+    id: i64,
+    expected_revision: i64,
+    now: i64,
+) -> Result<TransitionResult> {
+    let current = command_session(store, id, expected_revision)?;
+    if !current.kind.is_break()
+        || !matches!(
+            current.phase,
+            SessionPhase::Running | SessionPhase::ReadyToClose
+        )
+    {
+        return Err(invalid_transition());
+    }
+    let session =
+        store.finish_session(id, expected_revision, SessionOutcome::Partial, None, now)?;
+    transition_result(store, session, now, vec![])
+}
+
+/// La pausa proposta è lunga ogni `long_every` focus completati nella giornata
+/// civile indicata dal chiamante. Nessun contatore incrementale viene salvato.
+pub fn proposed_break(store: &Store, day_start: i64, cfg: &PomodoroConfig) -> Result<SessionKind> {
+    let completed = store.completed_focus_since(day_start)?;
+    Ok(
+        if cfg.long_every > 0 && completed > 0 && completed % cfg.long_every == 0 {
+            SessionKind::LongBreak
+        } else {
+            SessionKind::ShortBreak
+        },
+    )
+}
+
+/// Applica solo transizioni determinate dall'orologio. Il cambio di fase rende
+/// l'evento effimero one-shot; Task 4 ne renderà durevole l'identificatore.
+pub fn tick(store: &Store, now: i64) -> Result<Vec<PomodoroEvent>> {
+    let Some(current) = store.open_session()? else {
+        return Ok(vec![]);
+    };
+    if current.deadline_at > now {
+        return Ok(vec![]);
+    }
+    match (current.kind, current.phase) {
+        (SessionKind::Focus, SessionPhase::Running) => {
+            let session = store.set_phase(
+                current.id,
+                SessionPhase::ReadyToClose,
+                current.transition_revision,
+                now,
+            )?;
+            Ok(vec![event(&session, EventKind::ReadyToClose)])
+        }
+        (kind, SessionPhase::Running | SessionPhase::ReadyToClose) if kind.is_break() => {
+            let session = store.finish_session(
+                current.id,
+                current.transition_revision,
+                SessionOutcome::Completed,
+                None,
+                now,
+            )?;
+            Ok(vec![event(&session, EventKind::ReturnPrompt)])
+        }
+        _ => Ok(vec![]),
+    }
+}
+
+/// Recupero transitorio di Task 3. Conserva una sessione per gap brevi; per un
+/// gap lungo chiede revisione senza inventare un outcome. Un focus scaduto
+/// entra comunque in `ReadyToClose`, ma oltre la finestra di rilevanza non
+/// produce la celebrazione tardiva.
 pub fn resolve_open(
     store: &Store,
     now: i64,
     last_alive: i64,
-    day_start: i64,
+    _day_start: i64,
     cfg: &PomodoroConfig,
 ) -> Result<Vec<PomodoroEvent>> {
-    let gap_ms = (now - last_alive).max(0);
-    let stale_ms = cfg.stale_sec * 1_000;
-    let mut events = Vec::new();
+    let Some(current) = store.open_session()? else {
+        return Ok(vec![]);
+    };
+    let gap_ms = now.saturating_sub(last_alive).max(0);
+    let stale_ms = cfg.stale_sec.saturating_mul(1_000);
+    let is_stale = gap_ms > stale_ms;
 
-    for s in store.open_sessions()? {
-        if now < s.ends_at {
-            if gap_ms <= stale_ms {
-                events.push(PomodoroEvent::Resumed { session: s });
-            } else {
-                store.resolve_session(
-                    s.id,
-                    s.transition_revision,
-                    SessionOutcome::Invalidated,
-                    now,
-                )?;
-                let session = store.get_session(s.id)?.expect("appena risolta");
-                events.push(PomodoroEvent::Invalidated { session });
-            }
-        } else if now - s.ends_at < LATE_NOTIFY_MS {
-            store.resolve_session(
-                s.id,
-                s.transition_revision,
-                SessionOutcome::Completed,
-                now,
-            )?;
-            let session = store.get_session(s.id)?.expect("appena risolta");
-            if s.kind == SessionKind::Focus {
-                let proposed = proposed_break(store, day_start, cfg)?;
-                events.push(PomodoroEvent::FocusCompleted { session, proposed_break: proposed });
-            } else {
-                events.push(PomodoroEvent::BreakCompleted { session });
-            }
+    if current.kind == SessionKind::Focus
+        && current.phase == SessionPhase::Running
+        && now >= current.deadline_at
+    {
+        let lateness = now.saturating_sub(current.deadline_at);
+        let session = store.set_phase(
+            current.id,
+            SessionPhase::ReadyToClose,
+            current.transition_revision,
+            now,
+        )?;
+        let kind = if is_stale || lateness >= LATE_NOTIFY_MS {
+            EventKind::RecoveryNeeded
         } else {
-            store.resolve_session(
-                s.id,
-                s.transition_revision,
-                SessionOutcome::Invalidated,
-                now,
-            )?;
-            let session = store.get_session(s.id)?.expect("appena risolta");
-            events.push(PomodoroEvent::Invalidated { session });
-        }
+            EventKind::ReadyToClose
+        };
+        return Ok(vec![event(&session, kind)]);
     }
-    Ok(events)
+
+    if is_stale {
+        return Ok(vec![event(&current, EventKind::RecoveryNeeded)]);
+    }
+
+    if current.kind.is_break()
+        && current.phase == SessionPhase::Running
+        && now >= current.deadline_at
+    {
+        let lateness = now.saturating_sub(current.deadline_at);
+        if lateness >= LATE_NOTIFY_MS {
+            return Ok(vec![event(&current, EventKind::RecoveryNeeded)]);
+        }
+        let session = store.finish_session(
+            current.id,
+            current.transition_revision,
+            SessionOutcome::Completed,
+            None,
+            now,
+        )?;
+        return Ok(vec![event(&session, EventKind::ReturnPrompt)]);
+    }
+
+    Ok(vec![])
 }
 
 #[cfg(test)]
@@ -225,152 +413,312 @@ mod tests {
 
     const MIN: i64 = 60_000;
 
-    fn setup() -> (Store, PomodoroConfig) {
-        let s = Store::open_in_memory().unwrap();
-        let cfg = PomodoroConfig::load(&s);
-        (s, cfg)
+    fn setup() -> Store {
+        Store::open_in_memory().unwrap()
+    }
+
+    fn request(duration_ms: i64) -> StartSession {
+        StartSession::focus(1, "Spec", duration_ms)
     }
 
     #[test]
-    fn config_loads_defaults_from_settings() {
-        let (_, cfg) = setup();
-        assert_eq!(cfg.focus_min, 25);
-        assert_eq!(cfg.long_every, 4);
-        assert_eq!(cfg.stale_sec, 120);
-    }
-
-    #[test]
-    fn focus_runs_to_completion_and_proposes_short_break() {
-        let (s, cfg) = setup();
-        let t0 = 1_000_000;
-        start(&s, SessionKind::Focus, Some("spec"), t0, &cfg).unwrap();
-        assert!(focus_active(&s, t0 + MIN).unwrap());
-
-        // prima della fine: nessun evento
-        assert!(tick(&s, t0 + 24 * MIN, 0, &cfg).unwrap().is_empty());
-
-        let ev = tick(&s, t0 + 25 * MIN, 0, &cfg).unwrap();
-        assert_eq!(ev.len(), 1);
-        match &ev[0] {
-            PomodoroEvent::FocusCompleted { session, proposed_break } => {
-                assert_eq!(session.outcome, Some(SessionOutcome::Completed));
-                assert_eq!(*proposed_break, SessionKind::ShortBreak);
-            }
-            other => panic!("atteso FocusCompleted, avuto {other:?}"),
-        }
-        assert!(!focus_active(&s, t0 + 26 * MIN).unwrap());
-    }
-
-    #[test]
-    fn every_fourth_focus_proposes_long_break() {
-        let (s, cfg) = setup();
-        let day = 0;
-        let mut t = 1_000;
-        for i in 1..=4 {
-            start(&s, SessionKind::Focus, None, t, &cfg).unwrap();
-            let ev = tick(&s, t + 25 * MIN, day, &cfg).unwrap();
-            let expected = if i == 4 { SessionKind::LongBreak } else { SessionKind::ShortBreak };
-            match &ev[0] {
-                PomodoroEvent::FocusCompleted { proposed_break, .. } => {
-                    assert_eq!(*proposed_break, expected, "focus n. {i}");
-                }
-                other => panic!("{other:?}"),
-            }
-            t += 30 * MIN;
-        }
-        // il conteggio è per giornata civile: da domani si riparte
-        let tomorrow_start = t + 24 * 60 * MIN;
-        start(&s, SessionKind::Focus, None, tomorrow_start, &cfg).unwrap();
-        let ev = tick(&s, tomorrow_start + 25 * MIN, tomorrow_start, &cfg).unwrap();
-        match &ev[0] {
-            PomodoroEvent::FocusCompleted { proposed_break, .. } => {
-                assert_eq!(*proposed_break, SessionKind::ShortBreak);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn break_completion_returns_to_idle() {
-        let (s, cfg) = setup();
-        start(&s, SessionKind::ShortBreak, None, 0, &cfg).unwrap();
-        let ev = tick(&s, 5 * MIN, 0, &cfg).unwrap();
-        assert!(matches!(ev[0], PomodoroEvent::BreakCompleted { .. }));
-        assert!(active_session(&s, 6 * MIN).unwrap().is_none());
-    }
-
-    #[test]
-    fn starting_a_new_session_aborts_the_open_one() {
-        let (s, cfg) = setup();
-        let first = start(&s, SessionKind::Focus, None, 0, &cfg).unwrap();
-        start(&s, SessionKind::Focus, None, 10 * MIN, &cfg).unwrap();
-        let first = s.get_session(first.id).unwrap().unwrap();
-        assert_eq!(first.outcome, Some(SessionOutcome::Aborted));
-        assert_eq!(s.open_sessions().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn abort_resolves_current() {
-        let (s, cfg) = setup();
-        start(&s, SessionKind::Focus, None, 0, &cfg).unwrap();
-        let aborted = abort(&s, MIN).unwrap().unwrap();
+    fn deadline_requires_explicit_close_or_overtime() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        let out = tick(&s, 25 * MIN).unwrap();
+        assert_eq!(out[0].kind, EventKind::ReadyToClose);
         assert_eq!(
-            s.get_session(aborted.id).unwrap().unwrap().outcome,
-            Some(SessionOutcome::Aborted)
+            s.get_session(active.id).unwrap().unwrap().phase,
+            SessionPhase::ReadyToClose
         );
-        assert!(abort(&s, 2 * MIN).unwrap().is_none());
-    }
-
-    // ------------------------------------------------ § 8.3, i quattro rami
-
-    #[test]
-    fn short_gap_resumes_the_session() {
-        let (s, cfg) = setup();
-        start(&s, SessionKind::Focus, None, 0, &cfg).unwrap();
-        // sospeso per 60s (sotto la soglia dei 120), sessione non ancora finita
-        let ev = resolve_open(&s, 10 * MIN, 10 * MIN - 60_000, 0, &cfg).unwrap();
-        assert!(matches!(ev[0], PomodoroEvent::Resumed { .. }));
-        assert!(focus_active(&s, 10 * MIN).unwrap());
-    }
-
-    #[test]
-    fn long_gap_invalidates_silently() {
-        let (s, cfg) = setup();
-        start(&s, SessionKind::Focus, None, 0, &cfg).unwrap();
-        // sospeso per 10 minuti, sessione non ancora finita
-        let ev = resolve_open(&s, 15 * MIN, 5 * MIN, 0, &cfg).unwrap();
-        match &ev[0] {
-            PomodoroEvent::Invalidated { session } => {
-                assert_eq!(session.outcome, Some(SessionOutcome::Invalidated));
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn recently_ended_notifies_normally() {
-        let (s, cfg) = setup();
-        start(&s, SessionKind::Focus, None, 0, &cfg).unwrap();
-        // riavvio 3 minuti dopo la fine naturale (25')
-        let now = 28 * MIN;
-        let ev = resolve_open(&s, now, now - 1_000, 0, &cfg).unwrap();
-        match &ev[0] {
-            PomodoroEvent::FocusCompleted { session, .. } => {
-                assert_eq!(session.outcome, Some(SessionOutcome::Completed));
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn ended_long_ago_invalidates_silently() {
-        let (s, cfg) = setup();
-        start(&s, SessionKind::Focus, None, 0, &cfg).unwrap();
-        // riavvio il giorno dopo: nessun annuncio alle quattro del mattino
-        let now = 24 * 60 * MIN;
-        let ev = resolve_open(&s, now, now - 1_000, 0, &cfg).unwrap();
-        assert!(matches!(ev[0], PomodoroEvent::Invalidated { .. }));
-        // e non conta nelle statistiche
+        assert_eq!(s.get_session(active.id).unwrap().unwrap().outcome, None);
         assert_eq!(s.completed_focus_since(0).unwrap(), 0);
+
+        start_overtime(&s, active.id, 1, 25 * MIN).unwrap();
+        let closed = finish(&s, active.id, 2, SessionOutcome::Completed, None, 32 * MIN).unwrap();
+        assert_eq!(closed.effective_focus_ms, 32 * MIN);
+        assert_eq!(s.completed_focus_since(0).unwrap(), 1);
+    }
+
+    #[test]
+    fn pause_resume_preserves_remaining_time() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        pause(&s, active.id, 0, 10 * MIN, None).unwrap();
+        let resumed = resume(&s, active.id, 1, 20 * MIN).unwrap();
+        assert_eq!(resumed.session.deadline_at, 35 * MIN);
+    }
+
+    #[test]
+    fn break_deadline_closes_break_and_emits_return_prompt() {
+        let s = setup();
+        let focus = start(&s, request(MIN), 0).unwrap().session;
+        finish(&s, focus.id, 0, SessionOutcome::Completed, None, MIN).unwrap();
+        let break_session = start_break(&s, SessionKind::ShortBreak, 5 * MIN, MIN)
+            .unwrap()
+            .session;
+        let events = tick(&s, 6 * MIN).unwrap();
+        assert_eq!(
+            s.get_session(break_session.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert!(events
+            .iter()
+            .any(|event| event.kind == EventKind::ReturnPrompt));
+    }
+
+    #[test]
+    fn stale_commands_do_not_mutate_the_session() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        let err = pause(&s, active.id, 1, 10 * MIN, None).unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoreError::InvalidState(ref message) if message == "sessione già aggiornata"
+        ));
+        let current = s.get_session(active.id).unwrap().unwrap();
+        assert_eq!(current.phase, SessionPhase::Running);
+        assert_eq!(current.transition_revision, 0);
+    }
+
+    #[test]
+    fn stale_resume_leaves_pause_open_for_valid_retry() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        pause(&s, active.id, 0, 10 * MIN, None).unwrap();
+
+        resume(&s, active.id, 0, 20 * MIN).unwrap_err();
+        let resumed = resume(&s, active.id, 1, 20 * MIN).unwrap();
+
+        assert_eq!(resumed.session.deadline_at, 35 * MIN);
+        assert_eq!(resumed.session.transition_revision, 2);
+    }
+
+    #[test]
+    fn finish_stale_revision_rolls_back_pause_close() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        pause(&s, active.id, 0, 10 * MIN, Some("coffee")).unwrap();
+
+        finish(
+            &s,
+            active.id,
+            0,
+            SessionOutcome::Interrupted,
+            Some("meeting"),
+            15 * MIN,
+        )
+        .unwrap_err();
+        let closed = finish(
+            &s,
+            active.id,
+            1,
+            SessionOutcome::Interrupted,
+            Some("meeting"),
+            20 * MIN,
+        )
+        .unwrap();
+
+        assert_eq!(closed.effective_focus_ms, 10 * MIN);
+        assert_eq!(
+            closed.session.interruption_reason.as_deref(),
+            Some("meeting")
+        );
+    }
+
+    #[test]
+    fn signed_adjust_clamps_to_now_and_is_stale_safe() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+
+        let adjusted = adjust_duration(&s, active.id, 0, -30 * MIN, 10 * MIN).unwrap();
+        assert_eq!(adjusted.session.deadline_at, 10 * MIN);
+        assert_eq!(adjusted.session.phase, SessionPhase::ReadyToClose);
+        let err = adjust_duration(&s, active.id, 0, MIN, 10 * MIN).unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::InvalidState(ref message) if message == "sessione già aggiornata"
+        ));
+        assert_eq!(
+            s.get_session(active.id).unwrap().unwrap().deadline_at,
+            10 * MIN
+        );
+    }
+
+    #[test]
+    fn overtime_cannot_be_adjusted_back_into_running() {
+        let s = setup();
+        let active = start(&s, request(MIN), 0).unwrap().session;
+        tick(&s, MIN).unwrap();
+        start_overtime(&s, active.id, 1, MIN).unwrap();
+
+        let err = adjust_duration(&s, active.id, 2, MIN, 2 * MIN).unwrap_err();
+
+        assert!(matches!(err, CoreError::InvalidState(_)));
+        let current = s.get_session(active.id).unwrap().unwrap();
+        assert_eq!(current.phase, SessionPhase::Overtime);
+        assert_eq!(current.transition_revision, 2);
+    }
+
+    #[test]
+    fn adjust_to_ready_closes_an_open_pause_at_adjustment_time() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 0).unwrap().session;
+        pause(&s, active.id, 0, 10 * MIN, None).unwrap();
+        adjust_duration(&s, active.id, 1, -30 * MIN, 20 * MIN).unwrap();
+
+        let closed = finish(&s, active.id, 2, SessionOutcome::Completed, None, 25 * MIN).unwrap();
+
+        assert_eq!(closed.effective_focus_ms, 15 * MIN);
+    }
+
+    #[test]
+    fn break_duration_can_be_adjusted_but_break_cannot_be_paused() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::LongBreak, 20 * MIN, 0)
+            .unwrap()
+            .session;
+
+        let adjusted = adjust_duration(&s, break_session.id, 0, -5 * MIN, MIN).unwrap();
+        assert_eq!(adjusted.session.deadline_at, 15 * MIN);
+        assert!(pause(&s, break_session.id, 1, 2 * MIN, None).is_err());
+    }
+
+    #[test]
+    fn finish_reason_is_only_valid_for_interrupted_outcome() {
+        let s = setup();
+        let active = start(&s, request(MIN), 0).unwrap().session;
+
+        let err = finish(
+            &s,
+            active.id,
+            0,
+            SessionOutcome::Completed,
+            Some("not applicable"),
+            MIN,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, CoreError::InvalidState(_)));
+        assert_eq!(s.get_session(active.id).unwrap().unwrap().outcome, None);
+    }
+
+    #[test]
+    fn skip_break_records_partial_outcome() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, 5 * MIN, 0)
+            .unwrap()
+            .session;
+
+        let skipped = skip_break(&s, break_session.id, 0, 2 * MIN).unwrap();
+
+        assert_eq!(skipped.session.outcome, Some(SessionOutcome::Partial));
+        assert_eq!(skipped.session.phase, SessionPhase::Closed);
+    }
+
+    #[test]
+    fn invalid_transitions_are_rejected() {
+        let s = setup();
+        let active = start(&s, request(MIN), 0).unwrap().session;
+        assert!(resume(&s, active.id, 0, 1).is_err());
+        assert!(start_overtime(&s, active.id, 0, MIN).is_err());
+        assert!(start_break(&s, SessionKind::Focus, MIN, 0).is_err());
+
+        let mut invalid_start = request(MIN);
+        invalid_start.kind = SessionKind::ShortBreak;
+        assert!(start(&setup(), invalid_start, 0).is_err());
+    }
+
+    #[test]
+    fn tick_only_transitions_a_focus_deadline_once() {
+        let s = setup();
+        start(&s, request(MIN), 0).unwrap();
+
+        assert_eq!(tick(&s, MIN).unwrap().len(), 1);
+        assert!(tick(&s, MIN + 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn long_break_every_n_uses_completed_focuses_and_day_boundary() {
+        let s = setup();
+        let cfg = PomodoroConfig::load(&s);
+        for index in 0..4 {
+            let now = index * 2 * MIN;
+            let focus = start(&s, request(MIN), now).unwrap().session;
+            finish(&s, focus.id, 0, SessionOutcome::Completed, None, now + MIN).unwrap();
+        }
+        assert_eq!(proposed_break(&s, 0, &cfg).unwrap(), SessionKind::LongBreak);
+        assert_eq!(
+            proposed_break(&s, 24 * 60 * MIN, &cfg).unwrap(),
+            SessionKind::ShortBreak
+        );
+    }
+
+    #[test]
+    fn short_recovery_gap_preserves_running_session() {
+        let short = setup();
+        let short_focus = start(&short, request(25 * MIN), 0).unwrap().session;
+        assert!(
+            resolve_open(&short, 10 * MIN, 9 * MIN, 0, &PomodoroConfig::load(&short),)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            short.get_session(short_focus.id).unwrap().unwrap().phase,
+            SessionPhase::Running
+        );
+    }
+
+    #[test]
+    fn long_recovery_gap_requests_review_without_inventing_outcome() {
+        let long = setup();
+        let long_focus = start(&long, request(25 * MIN), 0).unwrap().session;
+        let events =
+            resolve_open(&long, 20 * MIN, 5 * MIN, 0, &PomodoroConfig::load(&long)).unwrap();
+        assert_eq!(events[0].kind, EventKind::RecoveryNeeded);
+        assert_eq!(
+            long.get_session(long_focus.id).unwrap().unwrap().outcome,
+            None
+        );
+    }
+
+    #[test]
+    fn recently_ended_focus_recovers_as_ready_to_close() {
+        let recent = setup();
+        let recent_focus = start(&recent, request(25 * MIN), 0).unwrap().session;
+        let events = resolve_open(
+            &recent,
+            28 * MIN,
+            28 * MIN - 1_000,
+            0,
+            &PomodoroConfig::load(&recent),
+        )
+        .unwrap();
+        assert_eq!(events[0].kind, EventKind::ReadyToClose);
+        assert_eq!(
+            recent.get_session(recent_focus.id).unwrap().unwrap().phase,
+            SessionPhase::ReadyToClose
+        );
+    }
+
+    #[test]
+    fn focus_ended_long_ago_requires_review_without_counting_completion() {
+        let late = setup();
+        let late_focus = start(&late, request(25 * MIN), 0).unwrap().session;
+        let events = resolve_open(
+            &late,
+            24 * 60 * MIN,
+            24 * 60 * MIN - 1_000,
+            0,
+            &PomodoroConfig::load(&late),
+        )
+        .unwrap();
+        assert_eq!(events[0].kind, EventKind::RecoveryNeeded);
+        assert_eq!(
+            late.get_session(late_focus.id).unwrap().unwrap().phase,
+            SessionPhase::ReadyToClose
+        );
+        assert_eq!(late.completed_focus_since(0).unwrap(), 0);
     }
 }
