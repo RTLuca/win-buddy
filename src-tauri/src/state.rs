@@ -8,7 +8,6 @@ use std::sync::Mutex;
 use chrono::{LocalResult, NaiveDateTime, TimeZone};
 use tauri::{AppHandle, Manager};
 use win_buddy_core::events::{BubbleShow, HitBox, StateChanged};
-use win_buddy_core::model::SessionKind;
 use win_buddy_core::{DndLevel, Store};
 
 pub struct AppState {
@@ -24,8 +23,6 @@ pub struct AppState {
     pub bubble: Mutex<Option<BubbleShow>>,
     /// L'ultimo `state:changed` emesso, idem.
     pub last_state: Mutex<Option<StateChanged>>,
-    /// Pausa proposta a fine focus, in attesa di accetta/salta.
-    pub break_prompt: Mutex<Option<SessionKind>>,
     /// Fine della finestra di festeggiamento dopo un focus chiuso.
     pub celebrating_until: AtomicI64,
     /// Ultima interazione dell'utente: decide sleep e spegnimento overlay.
@@ -53,7 +50,6 @@ impl AppState {
             armed_due: Mutex::new(None),
             bubble: Mutex::new(None),
             last_state: Mutex::new(None),
-            break_prompt: Mutex::new(None),
             celebrating_until: AtomicI64::new(0),
             last_interaction: AtomicI64::new(now),
             hitbox: Mutex::new(None),

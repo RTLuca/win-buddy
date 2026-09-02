@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use win_buddy_core::dnd::DndLevel;
-use win_buddy_core::pomodoro::{self, EventKind, PomodoroConfig, PomodoroEvent};
+use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent};
 use win_buddy_core::scheduler::{self, RESUME_GAP_MS, TICK_MS};
+use win_buddy_core::Store;
 
 use crate::platform;
 use crate::presenter;
@@ -101,9 +102,15 @@ pub fn do_tick(app: &AppHandle) {
     let (out, pomo_events) = {
         let store = state.store.lock().unwrap();
         let out = scheduler::tick(&store, now);
-        let ev = pomodoro::tick(&store, now);
-        (out.unwrap_or_else(|_| scheduler::TickOutcome { newly_fired: vec![], arm_timer_ms: None }),
-         ev.unwrap_or_default())
+        let _ = pomodoro::tick(&store, now);
+        let events = store.pending_presentation_events().unwrap_or_default();
+        (
+            out.unwrap_or_else(|_| scheduler::TickOutcome {
+                newly_fired: vec![],
+                arm_timer_ms: None,
+            }),
+            events,
+        )
     };
 
     handle_pomodoro_events(app, &pomo_events);
@@ -127,13 +134,13 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
     let (out, pomo_events) = {
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        let ev = pomodoro::resolve_open(&store, now, last_alive, day_start_ms(), &cfg)
-            .unwrap_or_default();
+        let _ = pomodoro::resolve_open(&store, now, last_alive, day_start_ms(), &cfg);
         let out = scheduler::tick(&store, now).unwrap_or_else(|_| scheduler::TickOutcome {
             newly_fired: vec![],
             arm_timer_ms: None,
         });
-        (out, ev)
+        let events = store.pending_presentation_events().unwrap_or_default();
+        (out, events)
     };
 
     handle_pomodoro_events(app, &pomo_events);
@@ -147,26 +154,27 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
 }
 
 fn handle_pomodoro_events(app: &AppHandle, events: &[PomodoroEvent]) {
-    let state = app.state::<AppState>();
-    // in DND nascosto niente toast (§ 10.3)
-    let toast_ok = presenter::effective_dnd(app).policy().toast_allowed;
-    for ev in events {
-        match ev.kind {
-            EventKind::ReadyToClose => {
-                state.last_interaction.store(now_ms(), Ordering::Relaxed);
-                if toast_ok && surfaces::overlay(app).is_none() {
-                    presenter::toast(app, "Tempo scaduto", "Chiudi il focus o continua.");
-                }
-            }
-            EventKind::ReturnPrompt => {
-                state.last_interaction.store(now_ms(), Ordering::Relaxed);
-                if toast_ok && surfaces::overlay(app).is_none() {
-                    presenter::toast(app, "Pausa finita", "Si riparte quando vuoi.");
-                }
-            }
-            EventKind::Prewarning | EventKind::RecoveryNeeded => {}
-        }
+    for event in events {
+        let presentation = presenter::present_pomodoro_event(app, event);
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        let _ = acknowledge_after_presentation(&store, event.id, now_ms(), presentation);
     }
+}
+
+fn acknowledge_after_presentation(
+    store: &Store,
+    event_id: i64,
+    now: i64,
+    presentation: Result<bool, String>,
+) -> Result<bool, String> {
+    let presented = presentation?;
+    if presented {
+        store
+            .acknowledge_presentation_event(event_id, now)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(presented)
 }
 
 /// Timer mirato (§ 7.2): armato solo per scadenze entro 60 s, mai per
@@ -214,7 +222,9 @@ fn poll_auto_dnd(app: &AppHandle) {
 /// occupato dalla creatura: dentro → la finestra accetta i clic, fuori →
 /// torna trasparente. Nessun hook di sistema (§ 10.2).
 fn poll_cursor(app: &AppHandle) {
-    let Some(win) = surfaces::overlay(app) else { return };
+    let Some(win) = surfaces::overlay(app) else {
+        return;
+    };
     let state = app.state::<AppState>();
 
     let inside = (|| -> Option<bool> {
@@ -236,5 +246,58 @@ fn poll_cursor(app: &AppHandle) {
     let was = state.overlay_interactive.swap(inside, Ordering::Relaxed);
     if was != inside {
         let _ = win.set_ignore_cursor_events(!inside);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use win_buddy_core::model::StartSession;
+    use win_buddy_core::Store;
+
+    const MIN: i64 = 60_000;
+
+    fn pending_event() -> (Store, PomodoroEvent) {
+        let store = Store::open_in_memory().unwrap();
+        pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0).unwrap();
+        let event = pomodoro::tick(&store, MIN).unwrap().remove(0);
+        (store, event)
+    }
+
+    #[test]
+    fn failed_presentation_leaves_the_event_pending() {
+        let (store, event) = pending_event();
+
+        let result = acknowledge_after_presentation(
+            &store,
+            event.id,
+            MIN + 1,
+            Err("notification failed".into()),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.pending_presentation_events().unwrap(), vec![event]);
+    }
+
+    #[test]
+    fn dnd_suppression_leaves_the_event_pending() {
+        let (store, event) = pending_event();
+
+        let presented =
+            acknowledge_after_presentation(&store, event.id, MIN + 1, Ok(false)).unwrap();
+
+        assert!(!presented);
+        assert_eq!(store.pending_presentation_events().unwrap(), vec![event]);
+    }
+
+    #[test]
+    fn successful_presentation_acknowledges_the_event() {
+        let (store, event) = pending_event();
+
+        let presented =
+            acknowledge_after_presentation(&store, event.id, MIN + 1, Ok(true)).unwrap();
+
+        assert!(presented);
+        assert!(store.pending_presentation_events().unwrap().is_empty());
     }
 }

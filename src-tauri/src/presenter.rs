@@ -14,6 +14,7 @@ use win_buddy_core::events::{
     EVT_BUBBLE_DISMISS, EVT_BUBBLE_SHOW, EVT_BUDDY_CHANGED, EVT_MODE_CHANGED, EVT_STATE_CHANGED,
 };
 use win_buddy_core::model::SessionKind;
+use win_buddy_core::pomodoro::{EventKind, PomodoroEvent, LATE_NOTIFY_MS};
 use win_buddy_core::scheduler::{presentation, Presentation};
 use win_buddy_core::{pomodoro, Store};
 
@@ -23,6 +24,7 @@ use crate::tray;
 
 /// Dopo quanto la creatura si addormenta (metà del tempo di spegnimento).
 const SLEEP_FRACTION: i64 = 2;
+const EVT_POMODORO_PRESENTATION: &str = "pomodoro:presentation";
 
 /// Il livello DND effettivo: il più severo tra manuale e automatico (§ 10.3).
 pub fn effective_dnd(app: &AppHandle) -> DndLevel {
@@ -73,13 +75,12 @@ pub fn sync(app: &AppHandle) {
                 .unwrap_or_else(|| "cotone".into()),
         )
     };
-    let break_prompt = *state.break_prompt.lock().unwrap();
     let celebrating = state.celebrating_until.load(Ordering::Relaxed) > now;
     let queued = fired.len();
 
     // ------------------------------------------------ ciclo di vita overlay
     let idle_ms = now - state.last_interaction.load(Ordering::Relaxed);
-    let has_content = active.is_some() || queued > 0 || break_prompt.is_some() || celebrating;
+    let has_content = active.is_some() || queued > 0 || celebrating;
     let overlay_wanted = policy.overlay_alive
         && (has_content || idle_ms < idle_sleep_min * 60_000);
 
@@ -90,26 +91,10 @@ pub fn sync(app: &AppHandle) {
     }
 
     // ------------------------------------------------ bolla in cima alla pila
-    // Priorità: proposta di pausa, poi la pila dei promemoria (§ 8.4: a fine
-    // focus, insieme alla pausa, arrivano le note maturate).
+    // La proposta di pausa non è più uno stato effimero del presenter; la
+    // pila dei promemoria continua a provenire soltanto dal database.
     let mut bubble: Option<BubbleShow> = None;
-    if let Some(kind) = break_prompt {
-        let minutes = {
-            let store = state.store.lock().unwrap();
-            pomodoro::PomodoroConfig::load(&store).duration_ms(kind) / 60_000
-        };
-        let text = match kind {
-            SessionKind::LongBreak => format!("Focus chiuso · pausa lunga ({minutes}′)?"),
-            _ => format!("Focus chiuso · pausa breve ({minutes}′)?"),
-        };
-        bubble = Some(BubbleShow {
-            id: 0,
-            text,
-            kind: BubbleKind::BreakPrompt,
-            urgent: false,
-            position: None,
-        });
-    } else if policy.notify_immediately {
+    if policy.notify_immediately {
         match presentation(&fired, dnd, focus_active) {
             Presentation::Stack { notes } => {
                 let total = notes.len();
@@ -222,6 +207,62 @@ pub fn toast(app: &AppHandle, title: &str, body: &str) {
         .title(title)
         .body(body)
         .show();
+}
+
+/// Presenta un evento dell'outbox usando il suo id come chiave stabile. Un
+/// `Ok(false)` indica una soppressione intenzionale (DND) e non va confermato.
+pub fn present_pomodoro_event(app: &AppHandle, event: &PomodoroEvent) -> Result<bool, String> {
+    let policy = effective_dnd(app).policy();
+    if !policy.notify_immediately {
+        return Ok(false);
+    }
+
+    app.emit(EVT_POMODORO_PRESENTATION, event)
+        .map_err(|error| error.to_string())?;
+
+    if policy.toast_allowed && surfaces::overlay(app).is_none() {
+        let (title, body) = pomodoro_event_copy(app, event);
+        let notification_id = i32::try_from(event.id)
+            .map_err(|_| format!("id outbox non rappresentabile: {}", event.id))?;
+        app.notification()
+            .builder()
+            .id(notification_id)
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|error| error.to_string())?;
+    }
+
+    app.state::<AppState>()
+        .last_interaction
+        .store(now_ms(), Ordering::Relaxed);
+    Ok(true)
+}
+
+fn pomodoro_event_copy(app: &AppHandle, event: &PomodoroEvent) -> (&'static str, &'static str) {
+    match event.kind {
+        EventKind::Prewarning => ("Quasi finito", "Prepara la chiusura del focus."),
+        EventKind::ReadyToClose if ready_event_is_late(app, event) => (
+            "Sessione da verificare",
+            "Controlla come si è concluso il focus.",
+        ),
+        EventKind::ReadyToClose => ("Tempo scaduto", "Chiudi il focus o continua."),
+        EventKind::ReturnPrompt => ("Pausa finita", "Si riparte quando vuoi."),
+        EventKind::RecoveryNeeded => (
+            "Sessione da verificare",
+            "Controlla come si è conclusa la sessione.",
+        ),
+    }
+}
+
+fn ready_event_is_late(app: &AppHandle, event: &PomodoroEvent) -> bool {
+    let state = app.state::<AppState>();
+    let store = state.store.lock().unwrap();
+    store
+        .get_session(event.session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|session| now_ms().saturating_sub(session.deadline_at) >= LATE_NOTIFY_MS)
 }
 
 /// I promemoria appena scattati generano un toast se l'overlay non è in

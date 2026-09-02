@@ -61,15 +61,32 @@ impl EventKind {
             Self::RecoveryNeeded => "recovery_needed",
         }
     }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "prewarning" => Some(Self::Prewarning),
+            "ready_to_close" => Some(Self::ReadyToClose),
+            "return_prompt" => Some(Self::ReturnPrompt),
+            "recovery_needed" => Some(Self::RecoveryNeeded),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PomodoroEvent {
-    /// Task 4 sostituirà il valore effimero con l'identificatore dell'outbox.
     pub id: i64,
     pub session_id: i64,
     pub kind: EventKind,
     pub transition_revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Recovery {
+    Resumed(PomodoroSession),
+    ReadyToClose(PomodoroSession),
+    NeedsReview(PomodoroSession),
+    Nothing,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,15 +112,6 @@ fn command_session(store: &Store, id: i64, expected_revision: i64) -> Result<Pom
         return Err(CoreError::InvalidState("sessione già aggiornata".into()));
     }
     Ok(session)
-}
-
-fn event(session: &PomodoroSession, kind: EventKind) -> PomodoroEvent {
-    PomodoroEvent {
-        id: 0,
-        session_id: session.id,
-        kind,
-        transition_revision: session.transition_revision,
-    }
 }
 
 fn transition_result(
@@ -149,8 +157,14 @@ pub fn pause(
         return Err(invalid_transition());
     }
     if now >= current.deadline_at {
-        let session = store.set_phase(id, SessionPhase::ReadyToClose, expected_revision, now)?;
-        let events = vec![event(&session, EventKind::ReadyToClose)];
+        let (session, durable_event) = store.set_phase_with_presentation_event(
+            id,
+            SessionPhase::ReadyToClose,
+            expected_revision,
+            now,
+            EventKind::ReadyToClose,
+        )?;
+        let events = vec![durable_event];
         return transition_result(store, session, now, events);
     }
     let session = store.pause_session(id, expected_revision, now, reason)?;
@@ -205,7 +219,8 @@ pub fn adjust_duration(
         None
     };
     let leaves_pause = current.phase == SessionPhase::Paused && phase != SessionPhase::Paused;
-    let session = store.adjust_session(
+    let event_kind = (phase == SessionPhase::ReadyToClose).then_some(EventKind::ReadyToClose);
+    let (session, durable_event) = store.adjust_session(
         id,
         expected_revision,
         SessionAdjustment {
@@ -214,12 +229,10 @@ pub fn adjust_duration(
             paused_remaining_ms,
             adjusted_at: now,
             close_open_pause: leaves_pause,
+            presentation_event: event_kind,
         },
     )?;
-    let events = (phase == SessionPhase::ReadyToClose)
-        .then(|| event(&session, EventKind::ReadyToClose))
-        .into_iter()
-        .collect();
+    let events = durable_event.into_iter().collect();
     transition_result(store, session, now, events)
 }
 
@@ -318,8 +331,8 @@ pub fn proposed_break(store: &Store, day_start: i64, cfg: &PomodoroConfig) -> Re
     )
 }
 
-/// Applica solo transizioni determinate dall'orologio. Il cambio di fase rende
-/// l'evento effimero one-shot; Task 4 ne renderà durevole l'identificatore.
+/// Applica solo transizioni determinate dall'orologio. Stato ed evento outbox
+/// vengono confermati nella stessa transazione.
 pub fn tick(store: &Store, now: i64) -> Result<Vec<PomodoroEvent>> {
     let Some(current) = store.open_session()? else {
         return Ok(vec![]);
@@ -329,41 +342,41 @@ pub fn tick(store: &Store, now: i64) -> Result<Vec<PomodoroEvent>> {
     }
     match (current.kind, current.phase) {
         (SessionKind::Focus, SessionPhase::Running) => {
-            let session = store.set_phase(
+            let (_session, event) = store.set_phase_with_presentation_event(
                 current.id,
                 SessionPhase::ReadyToClose,
                 current.transition_revision,
                 now,
+                EventKind::ReadyToClose,
             )?;
-            Ok(vec![event(&session, EventKind::ReadyToClose)])
+            Ok(vec![event])
         }
         (kind, SessionPhase::Running) if kind.is_break() => {
-            let session = store.finish_session(
+            let (_session, event) = store.finish_session_with_presentation_event(
                 current.id,
                 current.transition_revision,
                 SessionOutcome::Completed,
                 None,
                 now,
+                EventKind::ReturnPrompt,
             )?;
-            Ok(vec![event(&session, EventKind::ReturnPrompt)])
+            Ok(vec![event])
         }
         _ => Ok(vec![]),
     }
 }
 
-/// Recupero transitorio di Task 3. Conserva una sessione per gap brevi; per un
-/// gap lungo chiede revisione senza inventare un outcome. Un focus scaduto
-/// entra comunque in `ReadyToClose`, ma oltre la finestra di rilevanza non
-/// produce la celebrazione tardiva.
+/// Recupera deterministicamente la sessione aperta. I gap lunghi non
+/// inventano esiti; gli eventi prodotti vengono sempre affidati all'outbox.
 pub fn resolve_open(
     store: &Store,
     now: i64,
     last_alive: i64,
     _day_start: i64,
     cfg: &PomodoroConfig,
-) -> Result<Vec<PomodoroEvent>> {
+) -> Result<Recovery> {
     let Some(current) = store.open_session()? else {
-        return Ok(vec![]);
+        return Ok(Recovery::Nothing);
     };
     let gap_ms = now.saturating_sub(last_alive).max(0);
     let stale_ms = cfg.stale_sec.saturating_mul(1_000);
@@ -374,34 +387,19 @@ pub fn resolve_open(
         && now >= current.deadline_at
     {
         let lateness = now.saturating_sub(current.deadline_at);
-        let session = store.set_phase(
-            current.id,
-            SessionPhase::ReadyToClose,
-            current.transition_revision,
-            now,
-        )?;
         let kind = if is_stale || lateness >= LATE_NOTIFY_MS {
             EventKind::RecoveryNeeded
         } else {
             EventKind::ReadyToClose
         };
-        return Ok(vec![event(&session, kind)]);
-    }
-
-    if is_stale {
-        if current.kind.is_break()
-            && current.phase == SessionPhase::Running
-            && now >= current.deadline_at
-        {
-            let session = store.set_phase(
-                current.id,
-                SessionPhase::ReadyToClose,
-                current.transition_revision,
-                now,
-            )?;
-            return Ok(vec![event(&session, EventKind::RecoveryNeeded)]);
-        }
-        return Ok(vec![event(&current, EventKind::RecoveryNeeded)]);
+        let (session, _event) = store.set_phase_with_presentation_event(
+            current.id,
+            SessionPhase::ReadyToClose,
+            current.transition_revision,
+            now,
+            kind,
+        )?;
+        return Ok(Recovery::ReadyToClose(session));
     }
 
     if current.kind.is_break()
@@ -409,20 +407,46 @@ pub fn resolve_open(
         && now >= current.deadline_at
     {
         let lateness = now.saturating_sub(current.deadline_at);
-        if lateness >= LATE_NOTIFY_MS {
-            return Ok(vec![event(&current, EventKind::RecoveryNeeded)]);
+        if is_stale || lateness >= LATE_NOTIFY_MS {
+            let (session, _event) = store.set_phase_with_presentation_event(
+                current.id,
+                SessionPhase::ReadyToClose,
+                current.transition_revision,
+                now,
+                EventKind::RecoveryNeeded,
+            )?;
+            return Ok(Recovery::NeedsReview(session));
         }
-        let session = store.finish_session(
+        let (session, _event) = store.finish_session_with_presentation_event(
             current.id,
             current.transition_revision,
             SessionOutcome::Completed,
             None,
             now,
+            EventKind::ReturnPrompt,
         )?;
-        return Ok(vec![event(&session, EventKind::ReturnPrompt)]);
+        return Ok(Recovery::ReadyToClose(session));
     }
 
-    Ok(vec![])
+    if current.kind == SessionKind::Focus && current.phase == SessionPhase::ReadyToClose {
+        return Ok(Recovery::ReadyToClose(current));
+    }
+
+    if is_stale {
+        let _event = store.enqueue_current_presentation_event(
+            current.id,
+            current.transition_revision,
+            EventKind::RecoveryNeeded,
+            now,
+        )?;
+        return Ok(Recovery::NeedsReview(current));
+    }
+
+    if current.phase == SessionPhase::ReadyToClose {
+        Ok(Recovery::ReadyToClose(current))
+    } else {
+        Ok(Recovery::Resumed(current))
+    }
 }
 
 #[cfg(test)]
@@ -483,6 +507,18 @@ mod tests {
     }
 
     #[test]
+    fn pause_at_deadline_returns_the_durable_outbox_event() {
+        let s = setup();
+        let active = start(&s, request(MIN), 0).unwrap().session;
+
+        let ready = pause(&s, active.id, 0, MIN, None).unwrap();
+        let pending = s.pending_presentation_events().unwrap();
+
+        assert!(ready.events[0].id > 0);
+        assert_eq!(ready.events, pending);
+    }
+
+    #[test]
     fn break_deadline_closes_break_and_emits_return_prompt() {
         let s = setup();
         let focus = start(&s, request(MIN), 0).unwrap().session;
@@ -498,6 +534,24 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.kind == EventKind::ReturnPrompt));
+    }
+
+    #[test]
+    fn natural_break_deadline_persists_return_prompt_with_its_stable_id() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, MIN, 0)
+            .unwrap()
+            .session;
+
+        let events = tick(&s, MIN).unwrap();
+        let pending = s.pending_presentation_events().unwrap();
+
+        assert_eq!(
+            s.get_session(break_session.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert!(events[0].id > 0);
+        assert_eq!(events, pending);
     }
 
     #[test]
@@ -671,6 +725,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_break_adjustment_to_now_stays_ready_without_an_outcome() {
+        let s = setup();
+        let break_session = start_break(&s, SessionKind::ShortBreak, 5 * MIN, 0)
+            .unwrap()
+            .session;
+
+        let adjusted = adjust_duration(&s, break_session.id, 0, -10 * MIN, 2 * MIN).unwrap();
+        let pending = s.pending_presentation_events().unwrap();
+
+        assert_eq!(adjusted.session.phase, SessionPhase::ReadyToClose);
+        assert_eq!(adjusted.session.outcome, None);
+        assert_eq!(adjusted.events, pending);
+        assert!(adjusted.events[0].id > 0);
+        assert!(tick(&s, 3 * MIN).unwrap().is_empty());
+    }
+
+    #[test]
     fn finish_reason_is_only_valid_for_interrupted_outcome() {
         let s = setup();
         let active = start(&s, request(MIN), 0).unwrap().session;
@@ -725,6 +796,24 @@ mod tests {
     }
 
     #[test]
+    fn ready_event_is_durable_and_not_duplicated() {
+        let s = setup();
+        start(&s, request(MIN), 0).unwrap();
+
+        tick(&s, MIN).unwrap();
+        tick(&s, MIN + 5_000).unwrap();
+
+        let events = s.pending_presentation_events().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == EventKind::ReadyToClose)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn long_break_every_n_uses_completed_focuses_and_day_boundary() {
         let s = setup();
         let cfg = PomodoroConfig::load(&s);
@@ -744,11 +833,9 @@ mod tests {
     fn short_recovery_gap_preserves_running_session() {
         let short = setup();
         let short_focus = start(&short, request(25 * MIN), 0).unwrap().session;
-        assert!(
-            resolve_open(&short, 10 * MIN, 9 * MIN, 0, &PomodoroConfig::load(&short),)
-                .unwrap()
-                .is_empty()
-        );
+        let recovered =
+            resolve_open(&short, 10 * MIN, 9 * MIN, 0, &PomodoroConfig::load(&short)).unwrap();
+        assert!(matches!(recovered, Recovery::Resumed(_)));
         assert_eq!(
             short.get_session(short_focus.id).unwrap().unwrap().phase,
             SessionPhase::Running
@@ -759,13 +846,27 @@ mod tests {
     fn long_recovery_gap_requests_review_without_inventing_outcome() {
         let long = setup();
         let long_focus = start(&long, request(25 * MIN), 0).unwrap().session;
-        let events =
+        let recovered =
             resolve_open(&long, 20 * MIN, 5 * MIN, 0, &PomodoroConfig::load(&long)).unwrap();
-        assert_eq!(events[0].kind, EventKind::RecoveryNeeded);
+        assert!(matches!(recovered, Recovery::NeedsReview(_)));
+        assert_eq!(
+            long.pending_presentation_events().unwrap()[0].kind,
+            EventKind::RecoveryNeeded
+        );
         assert_eq!(
             long.get_session(long_focus.id).unwrap().unwrap().outcome,
             None
         );
+    }
+
+    #[test]
+    fn long_gap_marks_running_session_for_review() {
+        let s = setup();
+        start(&s, request(25 * MIN), 0).unwrap();
+
+        let recovered = resolve_open(&s, 20 * MIN, 5 * MIN, 0, &PomodoroConfig::load(&s)).unwrap();
+
+        assert!(matches!(recovered, Recovery::NeedsReview(_)));
     }
 
     #[test]
@@ -780,7 +881,11 @@ mod tests {
         let tick_events = tick(&s, 20 * MIN).unwrap();
         let after_tick = s.get_session(break_session.id).unwrap().unwrap();
 
-        assert_eq!(recovered[0].kind, EventKind::RecoveryNeeded);
+        assert!(matches!(recovered, Recovery::NeedsReview(_)));
+        assert_eq!(
+            s.pending_presentation_events().unwrap()[0].kind,
+            EventKind::RecoveryNeeded
+        );
         assert_eq!(after_recovery.phase, SessionPhase::ReadyToClose);
         assert_eq!(after_recovery.outcome, None);
         assert!(tick_events
@@ -794,7 +899,7 @@ mod tests {
     fn recently_ended_focus_recovers_as_ready_to_close() {
         let recent = setup();
         let recent_focus = start(&recent, request(25 * MIN), 0).unwrap().session;
-        let events = resolve_open(
+        let recovered = resolve_open(
             &recent,
             28 * MIN,
             28 * MIN - 1_000,
@@ -802,7 +907,11 @@ mod tests {
             &PomodoroConfig::load(&recent),
         )
         .unwrap();
-        assert_eq!(events[0].kind, EventKind::ReadyToClose);
+        assert!(matches!(recovered, Recovery::ReadyToClose(_)));
+        assert_eq!(
+            recent.pending_presentation_events().unwrap()[0].kind,
+            EventKind::ReadyToClose
+        );
         assert_eq!(
             recent.get_session(recent_focus.id).unwrap().unwrap().phase,
             SessionPhase::ReadyToClose
@@ -813,7 +922,7 @@ mod tests {
     fn focus_ended_long_ago_requires_review_without_counting_completion() {
         let late = setup();
         let late_focus = start(&late, request(25 * MIN), 0).unwrap().session;
-        let events = resolve_open(
+        let recovered = resolve_open(
             &late,
             24 * 60 * MIN,
             24 * 60 * MIN - 1_000,
@@ -821,11 +930,29 @@ mod tests {
             &PomodoroConfig::load(&late),
         )
         .unwrap();
-        assert_eq!(events[0].kind, EventKind::RecoveryNeeded);
+        assert!(matches!(recovered, Recovery::ReadyToClose(_)));
+        assert_eq!(
+            late.pending_presentation_events().unwrap()[0].kind,
+            EventKind::RecoveryNeeded
+        );
         assert_eq!(
             late.get_session(late_focus.id).unwrap().unwrap().phase,
             SessionPhase::ReadyToClose
         );
         assert_eq!(late.completed_focus_since(0).unwrap(), 0);
+    }
+
+    #[test]
+    fn already_ready_focus_recovers_as_ready_even_after_a_long_gap() {
+        let s = setup();
+        let focus = start(&s, request(MIN), 0).unwrap().session;
+        tick(&s, MIN).unwrap();
+
+        let recovered = resolve_open(&s, 20 * MIN, MIN, 0, &PomodoroConfig::load(&s)).unwrap();
+
+        assert!(matches!(recovered, Recovery::ReadyToClose(_)));
+        let stored = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(stored.phase, SessionPhase::ReadyToClose);
+        assert_eq!(stored.outcome, None);
     }
 }

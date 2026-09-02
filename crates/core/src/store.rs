@@ -7,8 +7,9 @@ use crate::model::{
     Note, NoteState, PomodoroPreset, PomodoroSession, PresentationEvent, SessionKind,
     SessionOutcome, SessionPhase, StartSession,
 };
+use crate::pomodoro::{EventKind, PomodoroEvent};
 use crate::{CoreError, Result};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use std::path::Path;
 
 const SCHEMA: &str = include_str!("../sql/schema.sql");
@@ -23,6 +24,7 @@ pub(crate) struct SessionAdjustment {
     pub paused_remaining_ms: Option<i64>,
     pub adjusted_at: i64,
     pub close_open_pause: bool,
+    pub presentation_event: Option<EventKind>,
 }
 
 fn note_from_row(row: &Row) -> rusqlite::Result<Note> {
@@ -142,6 +144,33 @@ fn presentation_event_from_row(row: &Row) -> rusqlite::Result<PresentationEvent>
         transition_revision: row.get("transition_revision")?,
         created_at: row.get("created_at")?,
         acknowledged_at: row.get("acknowledged_at")?,
+    })
+}
+
+fn enqueue_presentation_event(
+    transaction: &Transaction<'_>,
+    session_id: i64,
+    kind: EventKind,
+    transition_revision: i64,
+    created_at: i64,
+) -> Result<PomodoroEvent> {
+    transaction.execute(
+        "INSERT OR IGNORE INTO pomodoro_presentation_events(
+           session_id,kind,transition_revision,created_at,acknowledged_at
+         ) VALUES (?1,?2,?3,?4,NULL)",
+        params![session_id, kind.as_str(), transition_revision, created_at],
+    )?;
+    let id = transaction.query_row(
+        "SELECT id FROM pomodoro_presentation_events
+         WHERE session_id = ?1 AND kind = ?2 AND transition_revision = ?3",
+        params![session_id, kind.as_str(), transition_revision],
+        |row| row.get(0),
+    )?;
+    Ok(PomodoroEvent {
+        id,
+        session_id,
+        kind,
+        transition_revision,
     })
 }
 
@@ -513,7 +542,7 @@ impl Store {
         id: i64,
         expected_revision: i64,
         adjustment: SessionAdjustment,
-    ) -> Result<PomodoroSession> {
+    ) -> Result<(PomodoroSession, Option<PomodoroEvent>)> {
         let transaction = self.conn.unchecked_transaction()?;
         let changed = transaction.execute(
             "UPDATE pomodoro_sessions
@@ -543,9 +572,28 @@ impl Store {
                 return Err(CoreError::InvalidState("pausa non aperta".into()));
             }
         }
+        let transition_revision = transaction.query_row(
+            "SELECT transition_revision FROM pomodoro_sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        let event = adjustment
+            .presentation_event
+            .map(|kind| {
+                enqueue_presentation_event(
+                    &transaction,
+                    id,
+                    kind,
+                    transition_revision,
+                    adjustment.adjusted_at,
+                )
+            })
+            .transpose()?;
         transaction.commit()?;
-        self.get_session(id)?
-            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))
+        let session = self
+            .get_session(id)?
+            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))?;
+        Ok((session, event))
     }
 
     #[allow(dead_code)] // Primitive interna; Task 3 la compone in una transazione di dominio.
@@ -591,7 +639,34 @@ impl Store {
         expected_revision: i64,
         at_ms: i64,
     ) -> Result<PomodoroSession> {
-        let changed = self.conn.execute(
+        Ok(self
+            .set_phase_internal(id, phase, expected_revision, at_ms, None)?
+            .0)
+    }
+
+    pub(crate) fn set_phase_with_presentation_event(
+        &self,
+        id: i64,
+        phase: SessionPhase,
+        expected_revision: i64,
+        at_ms: i64,
+        event_kind: EventKind,
+    ) -> Result<(PomodoroSession, PomodoroEvent)> {
+        let (session, event) =
+            self.set_phase_internal(id, phase, expected_revision, at_ms, Some(event_kind))?;
+        Ok((session, event.expect("event kind supplied")))
+    }
+
+    fn set_phase_internal(
+        &self,
+        id: i64,
+        phase: SessionPhase,
+        expected_revision: i64,
+        at_ms: i64,
+        event_kind: Option<EventKind>,
+    ) -> Result<(PomodoroSession, Option<PomodoroEvent>)> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let changed = transaction.execute(
             "UPDATE pomodoro_sessions
              SET phase = ?2,
                  overtime_started_at = CASE
@@ -605,8 +680,21 @@ impl Store {
         if changed != 1 {
             return Err(session_already_updated());
         }
-        self.get_session(id)?
-            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))
+        let transition_revision = transaction.query_row(
+            "SELECT transition_revision FROM pomodoro_sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        let event = event_kind
+            .map(|kind| {
+                enqueue_presentation_event(&transaction, id, kind, transition_revision, at_ms)
+            })
+            .transpose()?;
+        transaction.commit()?;
+        let session = self
+            .get_session(id)?
+            .ok_or_else(|| CoreError::InvalidState("sessione aggiornata non trovata".into()))?;
+        Ok((session, event))
     }
 
     #[allow(dead_code)] // Primitive interna; non è parte dell'API pubblica del crate.
@@ -618,6 +706,47 @@ impl Store {
         interruption_reason: Option<&str>,
         resolved_at: i64,
     ) -> Result<PomodoroSession> {
+        Ok(self
+            .finish_session_internal(
+                id,
+                expected_revision,
+                outcome,
+                interruption_reason,
+                resolved_at,
+                None,
+            )?
+            .0)
+    }
+
+    pub(crate) fn finish_session_with_presentation_event(
+        &self,
+        id: i64,
+        expected_revision: i64,
+        outcome: SessionOutcome,
+        interruption_reason: Option<&str>,
+        resolved_at: i64,
+        event_kind: EventKind,
+    ) -> Result<(PomodoroSession, PomodoroEvent)> {
+        let (session, event) = self.finish_session_internal(
+            id,
+            expected_revision,
+            outcome,
+            interruption_reason,
+            resolved_at,
+            Some(event_kind),
+        )?;
+        Ok((session, event.expect("event kind supplied")))
+    }
+
+    fn finish_session_internal(
+        &self,
+        id: i64,
+        expected_revision: i64,
+        outcome: SessionOutcome,
+        interruption_reason: Option<&str>,
+        resolved_at: i64,
+        event_kind: Option<EventKind>,
+    ) -> Result<(PomodoroSession, Option<PomodoroEvent>)> {
         let transaction = self.conn.unchecked_transaction()?;
         transaction.execute(
             "UPDATE pomodoro_pause_intervals SET ended_at = MAX(started_at, ?2)
@@ -655,9 +784,21 @@ impl Store {
         if changed != 1 {
             return Err(session_already_updated());
         }
+        let transition_revision = transaction.query_row(
+            "SELECT transition_revision FROM pomodoro_sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        let event = event_kind
+            .map(|kind| {
+                enqueue_presentation_event(&transaction, id, kind, transition_revision, resolved_at)
+            })
+            .transpose()?;
         transaction.commit()?;
-        self.get_session(id)?
-            .ok_or_else(|| CoreError::InvalidState("sessione chiusa non trovata".into()))
+        let session = self
+            .get_session(id)?
+            .ok_or_else(|| CoreError::InvalidState("sessione chiusa non trovata".into()))?;
+        Ok((session, event))
     }
 
     pub fn effective_focus_ms(&self, id: i64, at_ms: i64) -> Result<i64> {
@@ -681,13 +822,69 @@ impl Store {
             .ok_or_else(|| CoreError::InvalidState("sessione non trovata".into()))
     }
 
-    pub fn pending_presentation_events(&self) -> Result<Vec<PresentationEvent>> {
+    pub fn pending_presentation_events(&self) -> Result<Vec<PomodoroEvent>> {
         let mut statement = self.conn.prepare(
             "SELECT * FROM pomodoro_presentation_events
              WHERE acknowledged_at IS NULL ORDER BY created_at,id",
         )?;
         let rows = statement.query_map([], presentation_event_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|event| {
+                let kind = EventKind::parse(&event.kind).ok_or_else(|| {
+                    CoreError::InvalidState(format!(
+                        "evento di presentazione sconosciuto: {}",
+                        event.kind
+                    ))
+                })?;
+                Ok(PomodoroEvent {
+                    id: event.id,
+                    session_id: event.session_id,
+                    kind,
+                    transition_revision: event.transition_revision,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn enqueue_current_presentation_event(
+        &self,
+        session_id: i64,
+        expected_revision: i64,
+        kind: EventKind,
+        created_at: i64,
+    ) -> Result<PomodoroEvent> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let current_revision = transaction
+            .query_row(
+                "SELECT transition_revision FROM pomodoro_sessions
+                 WHERE id = ?1 AND transition_revision = ?2 AND outcome IS NULL",
+                params![session_id, expected_revision],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(session_already_updated)?;
+        let event = enqueue_presentation_event(
+            &transaction,
+            session_id,
+            kind,
+            current_revision,
+            created_at,
+        )?;
+        transaction.commit()?;
+        Ok(event)
+    }
+
+    /// Conferma soltanto un evento ancora pendente. Retry e identificativi
+    /// obsoleti sono no-op, quindi non riscrivono l'istante del primo ack.
+    pub fn acknowledge_presentation_event(&self, id: i64, now: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE pomodoro_presentation_events
+             SET acknowledged_at = ?2
+             WHERE id = ?1 AND acknowledged_at IS NULL",
+            params![id, now],
+        )?;
+        Ok(())
     }
 
     pub fn resolve_session(
@@ -810,6 +1007,30 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn event_insert_failure_rolls_back_the_session_transition() {
+        let s = store();
+        let started = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER reject_pomodoro_event
+                 BEFORE INSERT ON pomodoro_presentation_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'outbox unavailable');
+                 END;",
+            )
+            .unwrap();
+
+        let error = crate::pomodoro::adjust_duration(&s, started.id, 0, -2 * MIN, MIN).unwrap_err();
+
+        assert!(matches!(error, CoreError::Db(_)));
+        let unchanged = s.get_session(started.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::Running);
+        assert_eq!(unchanged.transition_revision, 0);
     }
 
     #[test]
@@ -996,8 +1217,32 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].session_id, session.id);
-        assert_eq!(events[0].kind, "ready_to_close");
+        assert_eq!(events[0].kind, EventKind::ReadyToClose);
         assert_eq!(events[0].transition_revision, 0);
+    }
+
+    #[test]
+    fn acknowledging_an_event_is_idempotent_and_does_not_rewrite_the_first_ack() {
+        let s = store();
+        s.start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+
+        s.acknowledge_presentation_event(event.id, MIN + 1).unwrap();
+        s.acknowledge_presentation_event(event.id, MIN + 2).unwrap();
+        s.acknowledge_presentation_event(event.id + 10_000, MIN + 3)
+            .unwrap();
+
+        assert!(s.pending_presentation_events().unwrap().is_empty());
+        let acknowledged_at: i64 = s
+            .conn
+            .query_row(
+                "SELECT acknowledged_at FROM pomodoro_presentation_events WHERE id = ?1",
+                [event.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(acknowledged_at, MIN + 1);
     }
 
     #[test]

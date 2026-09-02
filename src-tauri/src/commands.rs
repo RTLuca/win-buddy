@@ -286,7 +286,6 @@ pub fn do_pomodoro_start(
             pomodoro::start_break(&store, kind, cfg.duration_ms(kind), now).map_err(err)?;
         }
     }
-    *app.state::<AppState>().break_prompt.lock().unwrap() = None;
     presenter::sync(app);
     pomodoro_status_dto(app)
 }
@@ -343,13 +342,6 @@ pub fn pomodoro_history(
 #[tauri::command]
 pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
     touch(&app);
-    let kind = app.state::<AppState>().break_prompt.lock().unwrap().take();
-    if let Some(kind) = kind {
-        let state = app.state::<AppState>();
-        let store = state.store.lock().unwrap();
-        let cfg = PomodoroConfig::load(&store);
-        pomodoro::start_break(&store, kind, cfg.duration_ms(kind), now_ms()).map_err(err)?;
-    }
     presenter::sync(&app);
     pomodoro_status_dto(&app)
 }
@@ -357,7 +349,6 @@ pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
 #[tauri::command]
 pub async fn break_skip(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
     touch(&app);
-    *app.state::<AppState>().break_prompt.lock().unwrap() = None;
     presenter::sync(&app);
     pomodoro_status_dto(&app)
 }
