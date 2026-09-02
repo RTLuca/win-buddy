@@ -84,5 +84,7 @@ export const closePanel = () => invoke<void>("close_panel");
 export const openCapture = () => invoke<void>("open_capture");
 
 /** Azione sulla bolla in cima alla pila: il core decide cosa mostrare dopo. */
-export const breakAccept = () => invoke<PomodoroStatus>("break_accept");
-export const breakSkip = () => invoke<PomodoroStatus>("break_skip");
+export const breakAccept = (eventId: number) =>
+  invoke<PomodoroStatus>("break_accept", { eventId });
+export const breakSkip = (eventId: number) =>
+  invoke<PomodoroStatus>("break_skip", { eventId });

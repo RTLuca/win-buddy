@@ -331,6 +331,41 @@ pub fn proposed_break(store: &Store, day_start: i64, cfg: &PomodoroConfig) -> Re
     )
 }
 
+/// Conferma il prompt durevole del focus e avvia la pausa proposta. Chiusura,
+/// ack e insert della pausa condividono il transaction boundary dello store.
+pub fn accept_proposed_break(
+    store: &Store,
+    event_id: i64,
+    now: i64,
+    day_start: i64,
+    cfg: &PomodoroConfig,
+) -> Result<()> {
+    let completed_after_current = store
+        .completed_focus_since(day_start)?
+        .checked_add(1)
+        .ok_or_else(|| CoreError::InvalidState("conteggio focus non valido".into()))?;
+    let kind = if cfg.long_every > 0 && completed_after_current % cfg.long_every == 0 {
+        SessionKind::LongBreak
+    } else {
+        SessionKind::ShortBreak
+    };
+    let request = StartSession {
+        kind,
+        preset_id: None,
+        intention: String::new(),
+        category: None,
+        planned_duration_ms: cfg.duration_ms(kind),
+        estimated_ms: None,
+        next_step: None,
+    };
+    store.finish_ready_focus_from_presentation(event_id, Some(request), now)
+}
+
+/// Conferma il prompt durevole del focus senza aprire una pausa.
+pub fn skip_proposed_break(store: &Store, event_id: i64, now: i64) -> Result<()> {
+    store.finish_ready_focus_from_presentation(event_id, None, now)
+}
+
 /// Applica solo transizioni determinate dall'orologio. Stato ed evento outbox
 /// vengono confermati nella stessa transazione.
 pub fn tick(store: &Store, now: i64) -> Result<Vec<PomodoroEvent>> {
@@ -490,6 +525,41 @@ mod tests {
         let closed = finish(&s, active.id, 2, SessionOutcome::Completed, None, 32 * MIN).unwrap();
         assert_eq!(closed.effective_focus_ms, 32 * MIN);
         assert_eq!(s.completed_focus_since(0).unwrap(), 1);
+    }
+
+    #[test]
+    fn accepting_ready_focus_event_atomically_starts_the_proposed_break() {
+        let s = setup();
+        let focus = start(&s, request(MIN), 0).unwrap().session;
+        let event = tick(&s, MIN).unwrap().remove(0);
+
+        accept_proposed_break(&s, event.id, MIN + 1, 0, &PomodoroConfig::load(&s)).unwrap();
+
+        assert_eq!(
+            s.get_session(focus.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert_eq!(
+            s.open_session().unwrap().unwrap().kind,
+            SessionKind::ShortBreak
+        );
+        assert!(s.pending_presentation_events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn skipping_ready_focus_event_closes_and_consumes_it_without_a_break() {
+        let s = setup();
+        let focus = start(&s, request(MIN), 0).unwrap().session;
+        let event = tick(&s, MIN).unwrap().remove(0);
+
+        skip_proposed_break(&s, event.id, MIN + 1).unwrap();
+
+        assert_eq!(
+            s.get_session(focus.id).unwrap().unwrap().outcome,
+            Some(SessionOutcome::Completed)
+        );
+        assert!(s.open_session().unwrap().is_none());
+        assert!(s.pending_presentation_events().unwrap().is_empty());
     }
 
     #[test]

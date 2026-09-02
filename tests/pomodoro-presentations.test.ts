@@ -51,7 +51,10 @@ test("live delivery and boot replay render and acknowledge the stable event once
     confirmAck = resolve;
   });
   const consume = createPomodoroPresentationConsumer({
-    render: (event) => rendered.push(event.id),
+    render: (event) => {
+      rendered.push(event.id);
+      return true;
+    },
     acknowledge: async (id) => {
       acknowledged.push(id);
       await pendingAck;
@@ -75,7 +78,10 @@ test("a failed acknowledgement permits retry with the same stable id", async () 
   const errors: unknown[] = [];
   let attempts = 0;
   const consume = createPomodoroPresentationConsumer({
-    render: (event) => rendered.push(event.id),
+    render: (event) => {
+      rendered.push(event.id);
+      return true;
+    },
     acknowledge: async (id) => {
       assert.equal(id, 41);
       attempts += 1;
@@ -100,7 +106,10 @@ test("pending presentations render one at a time before each acknowledgement", a
     confirmFirst = resolve;
   });
   const consume = createPomodoroPresentationConsumer({
-    render: (event) => rendered.push(event.id),
+    render: (event) => {
+      rendered.push(event.id);
+      return true;
+    },
     acknowledge: async (id) => {
       acknowledged.push(id);
       if (id === 41) await firstAck;
@@ -116,6 +125,60 @@ test("pending presentations render one at a time before each acknowledgement", a
   await Promise.all([first, second]);
   assert.deepEqual(rendered, [41, 42]);
   assert.deepEqual(acknowledged, [41, 42]);
+});
+
+test("an invisible sober presentation stays pending instead of being acknowledged", async () => {
+  const acknowledged: number[] = [];
+  const consume = createPomodoroPresentationConsumer({
+    render: () => false,
+    acknowledge: async (id) => {
+      acknowledged.push(id);
+    },
+  });
+
+  await consume(presentation);
+
+  assert.deepEqual(acknowledged, []);
+});
+
+test("a live event received during boot is queued after the durable replay", async () => {
+  const consumed: number[] = [];
+  let deliverLive: ((event: typeof presentation) => void) | undefined;
+
+  await connectPomodoroPresentationSource({
+    subscribe: async (deliver) => {
+      deliverLive = deliver;
+    },
+    replay: async () => {
+      deliverLive?.({ ...presentation, id: 42 });
+      return [presentation];
+    },
+    consume: async (event) => {
+      consumed.push(event.id);
+    },
+  });
+
+  assert.deepEqual(consumed, [41, 42]);
+});
+
+test("subscription and replay failures are reported without rejecting startup", async () => {
+  for (const failingPhase of ["subscribe", "replay"] as const) {
+    const errors: unknown[] = [];
+    await assert.doesNotReject(
+      connectPomodoroPresentationSource({
+        subscribe: async () => {
+          if (failingPhase === "subscribe") throw new Error("subscribe failed");
+        },
+        replay: async () => {
+          if (failingPhase === "replay") throw new Error("replay failed");
+          return [];
+        },
+        consume: async () => {},
+        reportError: (error) => errors.push(error),
+      }),
+    );
+    assert.equal(errors.length, 1);
+  }
 });
 
 test("a ready focus renders the legacy break actions with the outbox id", () => {

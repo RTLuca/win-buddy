@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use win_buddy_core::events::{BubbleShow, HitBox, StateChanged, EVT_NOTES_CHANGED};
 use win_buddy_core::model::{
-    Note, NoteState, PomodoroSession, SessionKind, SessionOutcome, SessionPhase, StartSession,
+    Note, NoteState, PomodoroSession, SessionKind, SessionOutcome, StartSession,
 };
 use win_buddy_core::parse;
 use win_buddy_core::pomodoro::{self, PomodoroConfig};
@@ -357,54 +357,55 @@ enum LegacyBreakAction {
 fn apply_legacy_break_action(
     store: &win_buddy_core::Store,
     action: LegacyBreakAction,
+    event_id: i64,
     now: i64,
     day_start: i64,
 ) -> win_buddy_core::Result<()> {
-    let current = store
-        .open_session()?
-        .filter(|session| {
-            session.kind == SessionKind::Focus && session.phase == SessionPhase::ReadyToClose
-        })
-        .ok_or_else(|| {
-            win_buddy_core::CoreError::InvalidState("nessuna proposta di pausa attiva".into())
-        })?;
-    pomodoro::finish(
-        store,
-        current.id,
-        current.transition_revision,
-        SessionOutcome::Completed,
-        None,
-        now,
-    )?;
-    if matches!(action, LegacyBreakAction::Accept) {
-        let cfg = PomodoroConfig::load(store);
-        let kind = pomodoro::proposed_break(store, day_start, &cfg)?;
-        pomodoro::start_break(store, kind, cfg.duration_ms(kind), now)?;
+    match action {
+        LegacyBreakAction::Accept => pomodoro::accept_proposed_break(
+            store,
+            event_id,
+            now,
+            day_start,
+            &PomodoroConfig::load(store),
+        ),
+        LegacyBreakAction::Skip => pomodoro::skip_proposed_break(store, event_id, now),
     }
-    Ok(())
 }
 
 #[tauri::command]
-pub async fn break_accept(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
+pub async fn break_accept(app: AppHandle, event_id: i64) -> CmdResult<PomodoroStatusDto> {
     touch(&app);
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_legacy_break_action(&store, LegacyBreakAction::Accept, now_ms(), day_start_ms())
-            .map_err(err)?;
+        apply_legacy_break_action(
+            &store,
+            LegacyBreakAction::Accept,
+            event_id,
+            now_ms(),
+            day_start_ms(),
+        )
+        .map_err(err)?;
     }
     presenter::sync(&app);
     pomodoro_status_dto(&app)
 }
 
 #[tauri::command]
-pub async fn break_skip(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
+pub async fn break_skip(app: AppHandle, event_id: i64) -> CmdResult<PomodoroStatusDto> {
     touch(&app);
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_legacy_break_action(&store, LegacyBreakAction::Skip, now_ms(), day_start_ms())
-            .map_err(err)?;
+        apply_legacy_break_action(
+            &store,
+            LegacyBreakAction::Skip,
+            event_id,
+            now_ms(),
+            day_start_ms(),
+        )
+        .map_err(err)?;
     }
     presenter::sync(&app);
     pomodoro_status_dto(&app)
@@ -631,9 +632,9 @@ mod tests {
         let focus = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
             .unwrap()
             .session;
-        pomodoro::tick(&store, MIN).unwrap();
+        let event = pomodoro::tick(&store, MIN).unwrap().remove(0);
 
-        apply_legacy_break_action(&store, LegacyBreakAction::Accept, MIN, 0).unwrap();
+        apply_legacy_break_action(&store, LegacyBreakAction::Accept, event.id, MIN, 0).unwrap();
 
         assert_eq!(
             store.get_session(focus.id).unwrap().unwrap().outcome,
@@ -642,6 +643,7 @@ mod tests {
         let active = store.open_session().unwrap().unwrap();
         assert_eq!(active.kind, SessionKind::ShortBreak);
         assert_eq!(active.phase, win_buddy_core::model::SessionPhase::Running);
+        assert!(store.pending_presentation_events().unwrap().is_empty());
     }
 
     #[test]
@@ -650,14 +652,15 @@ mod tests {
         let focus = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
             .unwrap()
             .session;
-        pomodoro::tick(&store, MIN).unwrap();
+        let event = pomodoro::tick(&store, MIN).unwrap().remove(0);
 
-        apply_legacy_break_action(&store, LegacyBreakAction::Skip, MIN, 0).unwrap();
+        apply_legacy_break_action(&store, LegacyBreakAction::Skip, event.id, MIN, 0).unwrap();
 
         assert_eq!(
             store.get_session(focus.id).unwrap().unwrap().outcome,
             Some(SessionOutcome::Completed)
         );
         assert!(store.open_session().unwrap().is_none());
+        assert!(store.pending_presentation_events().unwrap().is_empty());
     }
 }

@@ -1,7 +1,7 @@
 import type { BubbleShow, PomodoroPresentation } from "../shared/contracts";
 
 interface PresentationConsumer {
-  render(event: PomodoroPresentation): void;
+  render(event: PomodoroPresentation): boolean;
   acknowledge(id: number): Promise<unknown>;
   reportError?(error: unknown): void;
 }
@@ -10,19 +10,76 @@ interface PresentationSource {
   subscribe(deliver: (event: PomodoroPresentation) => void): Promise<unknown>;
   replay(): Promise<readonly PomodoroPresentation[]>;
   consume(event: PomodoroPresentation): Promise<void>;
+  reportError?(error: unknown): void;
 }
 
-/** Registra la consegna live prima di chiedere il replay durevole di boot. */
+export function createBubbleCommandHandler(
+  command: () => Promise<unknown>,
+  dismiss: () => void,
+  reportError: (error: unknown) => void = console.error,
+): () => Promise<void> {
+  return async () => {
+    try {
+      await command();
+      dismiss();
+    } catch (error) {
+      try {
+        reportError(error);
+      } catch {
+        // Il logger non deve trasformare il click in una rejection non gestita.
+      }
+    }
+  };
+}
+
+/** Registra il live, poi accoda replay durevole e buffer live in ordine stabile. */
 export async function connectPomodoroPresentationSource({
   subscribe,
   replay,
   consume,
+  reportError = console.error,
 }: PresentationSource): Promise<void> {
-  await subscribe((event) => {
-    void consume(event);
-  });
-  const pending = await replay();
-  for (const event of pending) void consume(event);
+  const buffered: PomodoroPresentation[] = [];
+  let bootstrapping = true;
+  const report = (error: unknown): void => {
+    try {
+      reportError(error);
+    } catch {
+      // Un logger difettoso non deve interrompere il bootstrap.
+    }
+  };
+  const deliver = async (event: PomodoroPresentation): Promise<void> => {
+    try {
+      await consume(event);
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  try {
+    await subscribe((event) => {
+      if (bootstrapping) {
+        buffered.push(event);
+      } else {
+        void deliver(event);
+      }
+    });
+  } catch (error) {
+    report(error);
+    return;
+  }
+
+  let pending: readonly PomodoroPresentation[] = [];
+  try {
+    pending = await replay();
+  } catch (error) {
+    report(error);
+  }
+  for (const event of pending) await deliver(event);
+  while (buffered.length > 0) {
+    await deliver(buffered.shift()!);
+  }
+  bootstrapping = false;
 }
 
 export function pomodoroPresentationBubble(event: PomodoroPresentation): BubbleShow {
@@ -78,12 +135,14 @@ export function createPomodoroPresentationConsumer({
     if (existing) return existing;
 
     const run = (): Promise<void> => {
+      let visible: boolean;
       try {
-        render(event);
+        visible = render(event);
       } catch (error) {
         report(error);
         return Promise.resolve();
       }
+      if (!visible) return Promise.resolve();
 
       try {
         return Promise.resolve(acknowledge(event.id))

@@ -13,6 +13,7 @@ import {
   type StateChanged,
 } from "../shared/contracts";
 import * as ipc from "../shared/ipc";
+import { createBubbleCommandHandler } from "./pomodoro-presentations";
 
 type Anchor = { x: number; y: number };
 
@@ -41,9 +42,10 @@ export class BubbleLayer {
   }
 
   /** Notifica dal core: ha priorità sul countdown. */
-  show(b: BubbleShow): void {
+  show(b: BubbleShow): boolean {
     this.current = b;
     this.render();
+    return !this.hiddenAll && this.el.classList.contains("on");
   }
 
   dismiss(id: number): void {
@@ -142,12 +144,24 @@ export class BubbleLayer {
       acts.append(btn("Apri il pannello", "primary", () => ipc.openPanel()));
     } else if (b.kind === "break_prompt") {
       acts.append(
-        btn("Inizia pausa", "primary", () => {
-          void ipc.breakAccept().then(() => this.dismiss(b.id));
-        }),
-        btn("Salta", "", () => {
-          void ipc.breakSkip().then(() => this.dismiss(b.id));
-        }),
+        btn(
+          "Inizia pausa",
+          "primary",
+          createBubbleCommandHandler(
+            () => ipc.breakAccept(b.id),
+            () => this.dismiss(b.id),
+            (error) => console.error("avvio pausa fallito", error),
+          ),
+        ),
+        btn(
+          "Salta",
+          "",
+          createBubbleCommandHandler(
+            () => ipc.breakSkip(b.id),
+            () => this.dismiss(b.id),
+            (error) => console.error("salto pausa fallito", error),
+          ),
+        ),
       );
     } else {
       acts.append(btn("Ok", "primary", () => this.dismiss(b.id)));
@@ -190,14 +204,14 @@ function el(tag: string, cls: string, text: string): HTMLElement {
   return e;
 }
 
-function btn(label: string, cls: string, onClick: () => void): HTMLButtonElement {
+function btn(label: string, cls: string, onClick: () => void | Promise<void>): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   if (cls) b.className = cls;
   b.textContent = label;
   b.addEventListener("click", (e) => {
     e.stopPropagation();
-    onClick();
+    void onClick();
   });
   return b;
 }

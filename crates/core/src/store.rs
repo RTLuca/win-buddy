@@ -887,6 +887,106 @@ impl Store {
         Ok(())
     }
 
+    /// Risolve il focus indicato da un evento `ready_to_close` e, se
+    /// richiesto, apre la pausa nella stessa transazione. L'identità outbox
+    /// deve corrispondere a sessione e revisione correnti; l'ack già presente
+    /// resta invariato.
+    pub(crate) fn finish_ready_focus_from_presentation(
+        &self,
+        event_id: i64,
+        break_request: Option<StartSession>,
+        resolved_at: i64,
+    ) -> Result<()> {
+        let break_deadline = break_request
+            .as_ref()
+            .map(|request| {
+                if !request.kind.is_break() || request.planned_duration_ms <= 0 {
+                    return Err(CoreError::InvalidState("durata pausa non valida".into()));
+                }
+                resolved_at
+                    .checked_add(request.planned_duration_ms)
+                    .ok_or_else(|| CoreError::InvalidState("durata pausa non valida".into()))
+            })
+            .transpose()?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let (session_id, transition_revision) = transaction
+            .query_row(
+                "SELECT e.session_id,e.transition_revision
+                 FROM pomodoro_presentation_events e
+                 JOIN pomodoro_sessions s ON s.id = e.session_id
+                 WHERE e.id = ?1
+                   AND e.kind = 'ready_to_close'
+                   AND e.transition_revision = s.transition_revision
+                   AND s.kind = 'focus'
+                   AND s.phase = 'ready_to_close'
+                   AND s.outcome IS NULL",
+                [event_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CoreError::InvalidState("evento di chiusura focus non più valido".into())
+            })?;
+        transaction.execute(
+            "UPDATE pomodoro_pause_intervals SET ended_at = MAX(started_at, ?2)
+             WHERE session_id = ?1 AND ended_at IS NULL",
+            params![session_id, resolved_at],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE pomodoro_sessions
+             SET phase = 'closed', outcome = 'completed', interruption_reason = NULL,
+                 resolved_at = MAX(
+                   pomodoro_sessions.started_at,
+                   ?3,
+                   COALESCE((
+                     SELECT MAX(p.started_at) FROM pomodoro_pause_intervals p
+                     WHERE p.session_id = pomodoro_sessions.id
+                   ), pomodoro_sessions.started_at),
+                   COALESCE((
+                     SELECT MAX(p.ended_at) FROM pomodoro_pause_intervals p
+                     WHERE p.session_id = pomodoro_sessions.id
+                   ), pomodoro_sessions.started_at)
+                 ),
+                 transition_revision = transition_revision + 1
+             WHERE id = ?1 AND transition_revision = ?2
+               AND kind = 'focus' AND phase = 'ready_to_close' AND outcome IS NULL",
+            params![session_id, transition_revision, resolved_at],
+        )?;
+        if changed != 1 {
+            return Err(session_already_updated());
+        }
+        transaction.execute(
+            "UPDATE pomodoro_presentation_events
+             SET acknowledged_at = COALESCE(acknowledged_at, ?2)
+             WHERE id = ?1 AND session_id = ?3 AND kind = 'ready_to_close'
+               AND transition_revision = ?4",
+            params![event_id, resolved_at, session_id, transition_revision],
+        )?;
+        if let (Some(request), Some(deadline_at)) = (break_request.as_ref(), break_deadline) {
+            transaction
+                .execute(
+                    "INSERT INTO pomodoro_sessions(
+                       kind,preset_id,phase,started_at,deadline_at,intention,category,
+                       planned_duration_ms,estimated_ms,next_step
+                     ) VALUES (?1,?2,'running',?3,?4,?5,?6,?7,?8,?9)",
+                    params![
+                        request.kind.as_str(),
+                        request.preset_id,
+                        resolved_at,
+                        deadline_at,
+                        &request.intention,
+                        request.category.as_deref(),
+                        request.planned_duration_ms,
+                        request.estimated_ms,
+                        request.next_step.as_deref(),
+                    ],
+                )
+                .map_err(invalid_session_write)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn resolve_session(
         &self,
         id: i64,
@@ -1243,6 +1343,118 @@ mod tests {
             )
             .unwrap();
         assert_eq!(acknowledged_at, MIN + 1);
+    }
+
+    #[test]
+    fn ready_focus_resolution_consumes_its_correlated_presentation_event() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+
+        s.finish_ready_focus_from_presentation(event.id, None, MIN + 1)
+            .unwrap();
+
+        let finished = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(finished.phase, SessionPhase::Closed);
+        assert_eq!(finished.outcome, Some(SessionOutcome::Completed));
+        assert!(s.pending_presentation_events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn presentation_from_an_obsolete_focus_cannot_resolve_the_current_focus() {
+        let s = store();
+        let first = s
+            .start_focus(StartSession::focus(1, "First", MIN), 0)
+            .unwrap();
+        let obsolete = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.finish_session(first.id, 1, SessionOutcome::Completed, None, MIN + 1)
+            .unwrap();
+        let current = s
+            .start_focus(StartSession::focus(1, "Current", MIN), MIN + 2)
+            .unwrap();
+        let current_event = crate::pomodoro::tick(&s, 2 * MIN + 2).unwrap().remove(0);
+
+        let error = s
+            .finish_ready_focus_from_presentation(obsolete.id, None, 2 * MIN + 3)
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::InvalidState(_)));
+        let unchanged = s.get_session(current.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
+        assert_eq!(unchanged.transition_revision, 1);
+        assert_eq!(
+            s.pending_presentation_events().unwrap(),
+            vec![obsolete, current_event]
+        );
+    }
+
+    #[test]
+    fn non_ready_presentation_event_cannot_resolve_a_ready_focus() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.conn
+            .execute(
+                "UPDATE pomodoro_presentation_events SET kind = 'prewarning' WHERE id = ?1",
+                [event.id],
+            )
+            .unwrap();
+
+        let error = s
+            .finish_ready_focus_from_presentation(event.id, None, MIN + 1)
+            .unwrap_err();
+
+        assert!(matches!(error, CoreError::InvalidState(_)));
+        let unchanged = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
+        assert_eq!(unchanged.outcome, None);
+        assert_eq!(unchanged.transition_revision, 1);
+        assert_eq!(s.pending_presentation_events().unwrap()[0].id, event.id);
+    }
+
+    #[test]
+    fn break_insert_failure_rolls_back_focus_completion_and_event_ack() {
+        let s = store();
+        let focus = s
+            .start_focus(StartSession::focus(1, "Spec", MIN), 0)
+            .unwrap();
+        let event = crate::pomodoro::tick(&s, MIN).unwrap().remove(0);
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_test_break_insert
+                 BEFORE INSERT ON pomodoro_sessions
+                 WHEN NEW.kind IN ('short_break','long_break')
+                 BEGIN SELECT RAISE(ABORT, 'forced break failure'); END;",
+            )
+            .unwrap();
+        let break_request = StartSession {
+            kind: SessionKind::ShortBreak,
+            preset_id: None,
+            intention: String::new(),
+            category: None,
+            planned_duration_ms: 5 * MIN,
+            estimated_ms: None,
+            next_step: None,
+        };
+
+        let error = s
+            .finish_ready_focus_from_presentation(event.id, Some(break_request), MIN + 1)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoreError::Db(_) | CoreError::InvalidState(_)
+        ));
+        let unchanged = s.get_session(focus.id).unwrap().unwrap();
+        assert_eq!(unchanged.phase, SessionPhase::ReadyToClose);
+        assert_eq!(unchanged.outcome, None);
+        assert_eq!(unchanged.transition_revision, 1);
+        assert_eq!(s.pending_presentation_events().unwrap(), vec![event]);
+        assert_eq!(s.open_session().unwrap().unwrap().id, focus.id);
     }
 
     #[test]

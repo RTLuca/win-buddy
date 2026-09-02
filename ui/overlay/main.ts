@@ -368,11 +368,12 @@ async function init(): Promise<void> {
       return boot.presentations;
     },
     consume: consumePomodoroPresentation,
+    reportError: (error) => console.error("bootstrap presentazioni Pomodoro fallito", error),
   });
 }
 
-void init().catch(() => {
-  /* la rete di sicurezza qui sotto monta comunque qualcosa */
+void init().catch((error) => {
+  console.error("inizializzazione overlay fallita", error);
 });
 
 // rete di sicurezza: qualunque cosa sia andata storta nel boot, dopo un

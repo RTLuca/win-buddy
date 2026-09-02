@@ -257,22 +257,26 @@ pub fn toast(app: &AppHandle, title: &str, body: &str) {
 
 /// Consegna un evento dell'outbox mantenendo il suo id nel payload. La sola
 /// emissione (o schedulazione del toast) non conferma mai l'evento: l'ack
-/// appartiene al consumer overlay dopo il render.
+/// appartiene al consumer overlay dopo un render realmente visibile.
 pub fn present_pomodoro_event(app: &AppHandle, event: &PomodoroEvent) -> Result<bool, String> {
-    let policy = effective_dnd(app).policy();
+    let dnd = effective_dnd(app);
+    let policy = dnd.policy();
     if !policy.notify_immediately {
         return Ok(false);
     }
 
-    let payload = {
+    let (payload, sober) = {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        pomodoro_presentation(&store, event)?
+        (
+            pomodoro_presentation(&store, event)?,
+            sober_mode(&store, dnd),
+        )
     };
     app.emit(EVT_POMODORO_PRESENTATION, &payload)
         .map_err(|error| error.to_string())?;
 
-    if policy.toast_allowed && surfaces::overlay(app).is_none() {
+    if native_pomodoro_toast_needed(dnd, sober, surfaces::overlay(app).is_some()) {
         let state = app.state::<AppState>();
         let should_schedule = state
             .native_pomodoro_attempts
@@ -324,6 +328,11 @@ fn ready_event_is_late(app: &AppHandle, event: &PomodoroEvent) -> bool {
         .is_some_and(|session| now_ms().saturating_sub(session.deadline_at) >= LATE_NOTIFY_MS)
 }
 
+fn native_pomodoro_toast_needed(dnd: DndLevel, sober: bool, overlay_present: bool) -> bool {
+    let policy = dnd.policy();
+    policy.toast_allowed && (policy.force_sober || sober || !overlay_present)
+}
+
 /// I promemoria appena scattati generano un toast se l'overlay non è in
 /// grado di presentarli (sobrio, distrutto o DND discreto).
 pub fn toast_for_new_fired(app: &AppHandle, newly: &[win_buddy_core::Note]) {
@@ -345,5 +354,22 @@ pub fn toast_for_new_fired(app: &AppHandle, newly: &[win_buddy_core::Note]) {
         for n in newly {
             toast(app, "Promemoria", &n.body);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discreet_and_sober_modes_use_a_native_toast_even_with_an_overlay() {
+        assert!(native_pomodoro_toast_needed(
+            DndLevel::Discreet,
+            false,
+            true
+        ));
+        assert!(native_pomodoro_toast_needed(DndLevel::Normal, true, true));
+        assert!(!native_pomodoro_toast_needed(DndLevel::Normal, false, true));
+        assert!(!native_pomodoro_toast_needed(DndLevel::Hidden, true, false));
     }
 }
