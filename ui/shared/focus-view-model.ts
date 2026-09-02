@@ -12,7 +12,7 @@ interface ActionCopy {
 }
 
 const ACTION_COPY: Record<FocusAction, ActionCopy> = {
-  "focus.start_last": { label: "Avvia", ariaLabel: "Avvia ultimo focus" },
+  "focus.start_last": { label: "Avvia", ariaLabel: "Avvia ultimo preset" },
   "focus.pause": { label: "Pausa", ariaLabel: "Metti in pausa il focus" },
   "focus.resume": { label: "Riprendi", ariaLabel: "Riprendi il focus" },
   "focus.extend_5": { label: "+5", ariaLabel: "Aggiungi 5 minuti al focus" },
@@ -29,12 +29,13 @@ const ACTION_COPY: Record<FocusAction, ActionCopy> = {
 const FOCUS_PHASE_LABEL: Record<Exclude<SessionPhase, "closed">, string> = {
   running: "Focus",
   paused: "In pausa",
-  ready_to_close: "Decidi",
-  overtime: "Overtime",
+  ready_to_close: "decidi",
+  overtime: "",
 };
 
 function formatClock(ms: number): string {
-  const seconds = Math.max(0, Math.ceil(ms / 1_000));
+  const finiteMs = Number.isFinite(ms) ? ms : 0;
+  const seconds = Math.max(0, Math.ceil(finiteMs / 1_000));
   const hours = Math.floor(seconds / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
   const remainder = seconds % 60;
@@ -56,7 +57,9 @@ export function focusClock(status: FocusStatus, now: number): string {
   if (session.phase === "overtime") {
     return `+${formatClock(now - (session.overtime_started_at ?? now))}`;
   }
-  if (session.phase === "ready_to_close") return formatClock(0);
+  if (session.phase === "ready_to_close") {
+    return session.kind === "focus" ? "00:00" : "";
+  }
   return formatClock(session.deadline_at - now);
 }
 
@@ -66,9 +69,7 @@ export function focusLabel(status: FocusStatus): string {
   if (!session || session.phase === "closed") return "Pronto";
   if (session.kind === "focus") return FOCUS_PHASE_LABEL[session.phase];
   if (session.phase === "ready_to_close") return "Pronto a tornare";
-  if (session.phase === "running") {
-    return session.kind === "short_break" ? "Pausa breve" : "Pausa lunga";
-  }
+  if (session.phase === "running") return "Pausa";
   return FOCUS_PHASE_LABEL[session.phase];
 }
 

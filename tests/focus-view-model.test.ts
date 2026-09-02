@@ -88,7 +88,7 @@ test("an idle status has a ready label, no clock, and the quick-start action", (
     {
       id: "focus.start_last",
       label: "Avvia",
-      ariaLabel: "Avvia ultimo focus",
+      ariaLabel: "Avvia ultimo preset",
     },
   ]);
 });
@@ -96,8 +96,8 @@ test("an idle status has a ready label, no clock, and the quick-start action", (
 for (const testCase of [
   { phase: "running", now: 60_001, clock: "24:00", label: "Focus" },
   { phase: "paused", now: 500_000, clock: "1:30", label: "In pausa" },
-  { phase: "ready_to_close", now: 2_000_000, clock: "0:00", label: "Decidi" },
-  { phase: "overtime", now: 71_000, clock: "+1:10", label: "Overtime" },
+  { phase: "ready_to_close", now: 2_000_000, clock: "00:00", label: "decidi" },
+  { phase: "overtime", now: 71_000, clock: "+1:10", label: "" },
   { phase: "closed", now: 2_000_000, clock: "", label: "Pronto" },
 ] as const) {
   test(`${testCase.phase} exposes its approved focus clock and label`, () => {
@@ -112,14 +112,11 @@ for (const testCase of [
   });
 }
 
-for (const testCase of [
-  { kind: "short_break", label: "Pausa breve" },
-  { kind: "long_break", label: "Pausa lunga" },
-] as const) {
-  test(`${testCase.kind} uses the break label, countdown, and contextual actions`, () => {
-    const status = breakFixture(testCase.kind, "running");
+for (const kind of ["short_break", "long_break"] as const) {
+  test(`${kind} uses the compact break label, countdown, and contextual actions`, () => {
+    const status = breakFixture(kind, "running");
 
-    assert.equal(focusLabel(status), testCase.label);
+    assert.equal(focusLabel(status), "Pausa");
     assert.equal(focusClock(status, 1_410_000), "1:30");
     assert.deepEqual(buddyActions(status), [
       { id: "break.skip", label: "Salta", ariaLabel: "Salta pausa" },
@@ -136,11 +133,38 @@ for (const testCase of [
     ]);
   });
 
-  test(`${testCase.kind} ready to close is ready to return at zero`, () => {
-    const status = breakFixture(testCase.kind, "ready_to_close");
+  test(`${kind} ready to close is ready to return without a clock`, () => {
+    const status = breakFixture(kind, "ready_to_close");
 
     assert.equal(focusLabel(status), "Pronto a tornare");
-    assert.equal(focusClock(status, 2_000_000), "0:00");
+    assert.equal(focusClock(status, 2_000_000), "");
+  });
+}
+
+for (const testCase of [
+  {
+    description: "a NaN deadline",
+    patch: { deadline_at: Number.NaN },
+    now: 0,
+    clock: "0:00",
+  },
+  {
+    description: "an infinite paused remainder",
+    patch: { phase: "paused", paused_remaining_ms: Number.POSITIVE_INFINITY },
+    now: 0,
+    clock: "0:00",
+  },
+  {
+    description: "an infinite overtime instant",
+    patch: { phase: "overtime", overtime_started_at: 1_000 },
+    now: Number.POSITIVE_INFINITY,
+    clock: "+0:00",
+  },
+] as const) {
+  test(`${testCase.description} falls back to a stable zero clock`, () => {
+    const status = fixture(testCase.patch);
+
+    assert.equal(focusClock(status, testCase.now), testCase.clock);
   });
 }
 
@@ -180,7 +204,7 @@ test("every semantic action has a visible and accessible label", () => {
   assert.deepEqual(
     actions.map(({ id, label, ariaLabel }) => ({ id, label, ariaLabel })),
     [
-      { id: "focus.start_last", label: "Avvia", ariaLabel: "Avvia ultimo focus" },
+      { id: "focus.start_last", label: "Avvia", ariaLabel: "Avvia ultimo preset" },
       { id: "focus.pause", label: "Pausa", ariaLabel: "Metti in pausa il focus" },
       { id: "focus.resume", label: "Riprendi", ariaLabel: "Riprendi il focus" },
       {
