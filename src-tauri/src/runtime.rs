@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use win_buddy_core::dnd::DndLevel;
-use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent, Recovery};
+use win_buddy_core::pomodoro::{self, PomodoroConfig, PomodoroEvent};
 use win_buddy_core::scheduler::{self, RESUME_GAP_MS, TICK_MS};
 use win_buddy_core::Store;
 
@@ -200,9 +200,9 @@ fn apply_pomodoro_recovery(
     config: &PomodoroConfig,
 ) -> win_buddy_core::Result<Option<commands::FocusStatusDto>> {
     let before = store.open_session()?;
-    let recovery = pomodoro::resolve_open(store, now, last_alive, day_start, config)?;
+    pomodoro::resolve_open(store, now, last_alive, day_start, config)?;
     let after = store.open_session()?;
-    let changed = before != after || matches!(recovery, Recovery::NeedsReview(_));
+    let changed = before != after;
     changed
         .then(|| commands::focus_status_from_store(store, now))
         .transpose()
@@ -378,6 +378,27 @@ mod tests {
         assert_eq!(recovered.transition_revision, 1);
         assert_eq!(
             store.pending_presentation_events().unwrap()[0].kind,
+            win_buddy_core::pomodoro::EventKind::RecoveryNeeded
+        );
+    }
+
+    #[test]
+    fn stale_recovery_before_deadline_does_not_request_focus_changed_on_retry() {
+        let store = Store::open_in_memory().unwrap();
+        let started = pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0)
+            .unwrap()
+            .session;
+        let cfg = PomodoroConfig::load(&store);
+
+        let first = apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg).unwrap();
+        let second = apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg).unwrap();
+
+        assert_eq!([first.is_some(), second.is_some()], [false, false]);
+        assert_eq!(store.open_session().unwrap(), Some(started));
+        let pending = store.pending_presentation_events().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].kind,
             win_buddy_core::pomodoro::EventKind::RecoveryNeeded
         );
     }
