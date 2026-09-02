@@ -627,7 +627,20 @@ impl Store {
         let changed = transaction.execute(
             "UPDATE pomodoro_sessions
              SET phase = ?2, outcome = ?4, interruption_reason = ?5,
-                 resolved_at = MAX(started_at, ?6),
+                 resolved_at = MAX(
+                   pomodoro_sessions.started_at,
+                   ?6,
+                   COALESCE((
+                     SELECT MAX(p.started_at)
+                     FROM pomodoro_pause_intervals p
+                     WHERE p.session_id = pomodoro_sessions.id
+                   ), pomodoro_sessions.started_at),
+                   COALESCE((
+                     SELECT MAX(p.ended_at)
+                     FROM pomodoro_pause_intervals p
+                     WHERE p.session_id = pomodoro_sessions.id
+                   ), pomodoro_sessions.started_at)
+                 ),
                  transition_revision = transition_revision + 1
              WHERE id = ?1 AND transition_revision = ?3 AND outcome IS NULL",
             params![
@@ -650,10 +663,13 @@ impl Store {
     pub fn effective_focus_ms(&self, id: i64, at_ms: i64) -> Result<i64> {
         self.conn
             .query_row(
-                "SELECT MAX(MIN(COALESCE(s.resolved_at, ?2), ?2) - s.started_at, 0)
+                "SELECT MAX(
+                        MAX(MIN(COALESCE(s.resolved_at, ?2), ?2) - s.started_at, 0)
                         - COALESCE(SUM(
                             MAX(MIN(COALESCE(p.ended_at, ?2), ?2) - p.started_at, 0)
-                          ), 0)
+                          ), 0),
+                        0
+                      )
                  FROM pomodoro_sessions s
                  LEFT JOIN pomodoro_pause_intervals p ON p.session_id = s.id
                  WHERE s.id = ?1
@@ -811,6 +827,20 @@ mod tests {
             s.effective_focus_ms(started.id, 35 * MIN).unwrap(),
             30 * MIN
         );
+    }
+
+    #[test]
+    fn effective_focus_clamps_corrupt_overlapping_pauses_to_zero() {
+        let s = store();
+        let started = s
+            .start_focus(StartSession::focus(1, "Spec", 25 * MIN), 10 * MIN)
+            .unwrap();
+        s.open_pause(started.id, 12 * MIN, None).unwrap();
+        s.close_pause(started.id, 16 * MIN).unwrap();
+        s.open_pause(started.id, 13 * MIN, None).unwrap();
+        s.close_pause(started.id, 16 * MIN).unwrap();
+
+        assert_eq!(s.effective_focus_ms(started.id, 16 * MIN).unwrap(), 0);
     }
 
     #[test]

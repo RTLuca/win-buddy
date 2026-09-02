@@ -257,7 +257,8 @@ pub fn finish(
         return Err(invalid_transition());
     }
     let session = store.finish_session(id, expected_revision, outcome, interruption_reason, now)?;
-    transition_result(store, session, now, vec![])
+    let effective_at = session.resolved_at.unwrap_or(now);
+    transition_result(store, session, effective_at, vec![])
 }
 
 pub fn start_break(
@@ -560,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_before_pause_start_does_not_inflate_effective_focus() {
+    fn finish_before_pause_start_clamps_to_pause_start_without_inflation() {
         let s = setup();
         let active = start(&s, request(25 * MIN), 10 * MIN).unwrap().session;
         pause(&s, active.id, 0, 15 * MIN, None).unwrap();
@@ -575,8 +576,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(closed.session.resolved_at, Some(14 * MIN));
-        assert_eq!(closed.effective_focus_ms, 4 * MIN);
+        assert_eq!(closed.session.resolved_at, Some(15 * MIN));
+        assert_eq!(closed.effective_focus_ms, 5 * MIN);
     }
 
     #[test]
@@ -588,6 +589,27 @@ mod tests {
 
         assert_eq!(closed.session.resolved_at, Some(10 * MIN));
         assert_eq!(closed.effective_focus_ms, 0);
+    }
+
+    #[test]
+    fn finish_cannot_precede_an_already_closed_pause() {
+        let s = setup();
+        let active = start(&s, request(25 * MIN), 10 * MIN).unwrap().session;
+        pause(&s, active.id, 0, 12 * MIN, None).unwrap();
+        resume(&s, active.id, 1, 16 * MIN).unwrap();
+
+        let closed = finish(
+            &s,
+            active.id,
+            2,
+            SessionOutcome::Interrupted,
+            None,
+            11 * MIN,
+        )
+        .unwrap();
+
+        assert_eq!(closed.session.resolved_at, Some(16 * MIN));
+        assert_eq!(closed.effective_focus_ms, 2 * MIN);
     }
 
     #[test]
