@@ -139,10 +139,29 @@ fn migrate_legacy_sessions(transaction: &Transaction<'_>) -> Result<()> {
            id,kind,phase,started_at,deadline_at,intention,planned_duration_ms,
            outcome,resolved_at,transition_revision
          )
-         SELECT id,kind,CASE WHEN outcome IS NULL THEN 'running' ELSE 'closed' END,
-                started_at,ends_at,COALESCE(label,''),ends_at-started_at,
-                CASE outcome WHEN 'aborted' THEN 'interrupted' ELSE outcome END,
-                resolved_at,0
+         SELECT id,kind,
+                CASE WHEN outcome IS NULL AND id = (
+                       SELECT id FROM pomodoro_sessions_v1
+                       WHERE outcome IS NULL ORDER BY started_at DESC,id DESC LIMIT 1
+                     ) THEN 'running' ELSE 'closed' END,
+                started_at,ends_at,COALESCE(label,''),
+                CASE WHEN ends_at > started_at THEN ends_at-started_at ELSE 1 END,
+                CASE
+                  WHEN outcome IS NULL AND id <> (
+                    SELECT id FROM pomodoro_sessions_v1
+                    WHERE outcome IS NULL ORDER BY started_at DESC,id DESC LIMIT 1
+                  ) THEN 'invalidated'
+                  WHEN outcome = 'aborted' THEN 'interrupted'
+                  ELSE outcome
+                END,
+                CASE
+                  WHEN outcome IS NULL AND id <> (
+                    SELECT id FROM pomodoro_sessions_v1
+                    WHERE outcome IS NULL ORDER BY started_at DESC,id DESC LIMIT 1
+                  ) THEN ends_at
+                  ELSE resolved_at
+                END,
+                0
          FROM pomodoro_sessions_v1;
          DROP TABLE pomodoro_sessions_v1;"
     ))?;
@@ -184,5 +203,67 @@ mod tests {
         assert_eq!(version, 2);
         assert_eq!(preset_count, 3);
         assert_eq!(intention, "Spec");
+    }
+
+    #[test]
+    fn normalizes_ambiguous_v1_open_sessions_without_losing_timestamps() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/schema-v1.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO pomodoro_sessions(id,kind,started_at,ends_at,outcome,label) VALUES
+               (1,'focus',2000,1000,NULL,'older'),
+               (2,'focus',3000,3000,NULL,'same-start-older-id'),
+               (3,'focus',3000,4000,NULL,'latest-id');",
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let rows = conn
+            .prepare(
+                "SELECT id,phase,started_at,deadline_at,planned_duration_ms,outcome,resolved_at
+                 FROM pomodoro_sessions ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    1,
+                    "closed".to_string(),
+                    2000,
+                    1000,
+                    1,
+                    Some("invalidated".to_string()),
+                    Some(1000),
+                ),
+                (
+                    2,
+                    "closed".to_string(),
+                    3000,
+                    3000,
+                    1,
+                    Some("invalidated".to_string()),
+                    Some(3000),
+                ),
+                (3, "running".to_string(), 3000, 4000, 1000, None, None),
+            ]
+        );
     }
 }

@@ -137,4 +137,3 @@ CREATE INDEX IF NOT EXISTS idx_pomo_pause_open
   ON pomodoro_pause_intervals(session_id) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_pomo_events_unacked
   ON pomodoro_presentation_events(created_at) WHERE acknowledged_at IS NULL;
-

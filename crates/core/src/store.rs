@@ -257,7 +257,8 @@ impl Store {
         self.conn.execute(
             "UPDATE pomodoro_sessions
              SET outcome = CASE ?2 WHEN 'aborted' THEN 'interrupted' ELSE ?2 END,
-                 phase = 'closed', resolved_at = ?3
+                 phase = 'closed', resolved_at = ?3,
+                 transition_revision = transition_revision + 1
              WHERE id = ?1 AND outcome IS NULL",
             params![id, outcome.as_str(), now],
         )?;
@@ -489,6 +490,25 @@ mod tests {
         s.resolve_session(sess.id, SessionOutcome::Completed, 100).unwrap();
         let sess = s.get_session(sess.id).unwrap().unwrap();
         assert_eq!(sess.outcome, Some(SessionOutcome::Aborted));
+    }
+
+    #[test]
+    fn resolving_session_increments_transition_revision() {
+        let s = store();
+        let sess = s.start_session(SessionKind::Focus, 0, 100, None).unwrap();
+
+        s.resolve_session(sess.id, SessionOutcome::Completed, 100)
+            .unwrap();
+
+        let revision: i64 = s
+            .conn
+            .query_row(
+                "SELECT transition_revision FROM pomodoro_sessions WHERE id = ?1",
+                [sess.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, 1);
     }
 
     #[test]
