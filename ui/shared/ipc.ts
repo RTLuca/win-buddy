@@ -15,8 +15,6 @@ import type {
   NoteView,
   OverlayBoot,
   PomodoroPreset,
-  PomodoroStatus,
-  SessionKind,
   StartSession,
 } from "./contracts";
 
@@ -82,14 +80,10 @@ export const focusFinish = (
   });
 export const focusStatus = () => invoke<FocusStatus>("focus_status");
 export const focusPresets = () => invoke<PomodoroPreset[]>("focus_presets");
-
-/** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
-export const pomodoroStart = (kind: SessionKind, label?: string) =>
-  invoke<PomodoroStatus>("pomodoro_start", { kind, label: label ?? null });
-/** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
-export const pomodoroAbort = () => invoke<PomodoroStatus>("pomodoro_abort");
-/** @deprecated Bridge temporaneo per il piano Buddy/Surfaces. */
-export const pomodoroStatus = () => invoke<PomodoroStatus>("pomodoro_status");
+export const focusCompleteWithBreak = (eventId: number) =>
+  invoke<FocusStatus>("focus_complete_with_break", { eventId });
+export const focusCompleteWithoutBreak = (eventId: number) =>
+  invoke<FocusStatus>("focus_complete_without_break", { eventId });
 export const pomodoroHistory = (limit = 50) =>
   invoke<import("./contracts").PomodoroSession[]>("pomodoro_history", { limit });
 export const pomodoroPresentationAck = (id: number) =>
@@ -132,9 +126,3 @@ export const monitorsList = () => invoke<MonitorInfo[]>("monitors_list");
 export const openPanel = () => invoke<void>("open_panel");
 export const closePanel = () => invoke<void>("close_panel");
 export const openCapture = () => invoke<void>("open_capture");
-
-/** Azione sulla bolla in cima alla pila: il core decide cosa mostrare dopo. */
-export const breakAccept = (eventId: number) =>
-  invoke<PomodoroStatus>("break_accept", { eventId });
-export const breakSkip = (eventId: number) =>
-  invoke<PomodoroStatus>("break_skip", { eventId });

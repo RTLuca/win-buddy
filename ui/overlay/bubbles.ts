@@ -13,7 +13,10 @@ import {
   type StateChanged,
 } from "../shared/contracts";
 import * as ipc from "../shared/ipc";
-import { createBubbleCommandHandler } from "./pomodoro-presentations";
+import {
+  createBubbleCommandHandler,
+  focusCompletionPromptActions,
+} from "./pomodoro-presentations";
 
 type Anchor = { x: number; y: number };
 
@@ -143,23 +146,20 @@ export class BubbleLayer {
     } else if (b.kind === "summary") {
       acts.append(btn("Apri il pannello", "primary", () => ipc.openPanel()));
     } else if (b.kind === "break_prompt") {
+      const actions = focusCompletionPromptActions(b.id, {
+        completeWithBreak: ipc.focusCompleteWithBreak,
+        completeWithoutBreak: ipc.focusCompleteWithoutBreak,
+      });
       acts.append(
-        btn(
-          "Inizia pausa",
-          "primary",
-          createBubbleCommandHandler(
-            () => ipc.breakAccept(b.id),
-            () => this.dismiss(b.id),
-            (error) => console.error("avvio pausa fallito", error),
-          ),
-        ),
-        btn(
-          "Salta",
-          "",
-          createBubbleCommandHandler(
-            () => ipc.breakSkip(b.id),
-            () => this.dismiss(b.id),
-            (error) => console.error("salto pausa fallito", error),
+        ...actions.map((action) =>
+          btn(
+            action.label,
+            action.className,
+            createBubbleCommandHandler(
+              action.command,
+              () => this.dismiss(b.id),
+              (error) => console.error("conclusione focus fallita", error),
+            ),
           ),
         ),
       );

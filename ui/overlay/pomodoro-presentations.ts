@@ -13,6 +13,35 @@ interface PresentationSource {
   reportError?(error: unknown): void;
 }
 
+interface FocusCompletionCommands {
+  completeWithBreak(eventId: number): Promise<unknown>;
+  completeWithoutBreak(eventId: number): Promise<unknown>;
+}
+
+export interface FocusCompletionPromptAction {
+  label: string;
+  className: string;
+  command(): Promise<unknown>;
+}
+
+export function focusCompletionPromptActions(
+  eventId: number,
+  commands: FocusCompletionCommands,
+): FocusCompletionPromptAction[] {
+  return [
+    {
+      label: "Completata · Pausa",
+      className: "primary",
+      command: () => commands.completeWithBreak(eventId),
+    },
+    {
+      label: "Completata · Salta",
+      className: "",
+      command: () => commands.completeWithoutBreak(eventId),
+    },
+  ];
+}
+
 export function createBubbleCommandHandler(
   command: () => Promise<unknown>,
   dismiss: () => void,
@@ -91,7 +120,7 @@ export function pomodoroPresentationBubble(event: PomodoroPresentation): BubbleS
       break;
     case "ready_to_close":
       if (event.session_kind === "focus") {
-        text = "Tempo scaduto · chiudi il focus e scegli la pausa.";
+        text = "Tempo scaduto · entrambe le scelte completano il focus.";
         kind = "break_prompt";
       } else {
         text = "Pausa pronta da chiudere.";

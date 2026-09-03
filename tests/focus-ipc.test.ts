@@ -52,3 +52,25 @@ test("focus mutation wrappers send session identity with the expected revision",
     },
   ]);
 });
+
+test("focus completion prompt wrappers send the durable event identity", async () => {
+  const browserGlobal = globalThis as typeof globalThis & { window?: typeof globalThis };
+  browserGlobal.window = globalThis;
+  const calls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+  mockIPC((command, payload) => {
+    calls.push({ command, payload: (payload ?? {}) as Record<string, unknown> });
+    return null;
+  });
+  try {
+    await ipc.focusCompleteWithBreak(41);
+    await ipc.focusCompleteWithoutBreak(42);
+  } finally {
+    clearMocks();
+    delete browserGlobal.window;
+  }
+
+  assert.deepEqual(calls, [
+    { command: "focus_complete_with_break", payload: { eventId: 41 } },
+    { command: "focus_complete_without_break", payload: { eventId: 42 } },
+  ]);
+});

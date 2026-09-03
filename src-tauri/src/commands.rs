@@ -427,23 +427,6 @@ fn apply_focus_start_last(
     )
 }
 
-fn apply_legacy_abort(store: &Store, now: i64) -> win_buddy_core::Result<()> {
-    let Some(session) = store.open_session()? else {
-        return Ok(());
-    };
-    apply_focus_mutation(
-        store,
-        FocusMutation::Finish {
-            session_id: session.id,
-            expected_revision: session.transition_revision,
-            outcome: SessionOutcome::Interrupted,
-            interruption_reason: None,
-        },
-        now,
-    )?;
-    Ok(())
-}
-
 fn do_focus_mutation(
     app: &AppHandle,
     mutation: FocusMutation<'_>,
@@ -676,13 +659,6 @@ pub(crate) fn dispatch_focus_finish(
 }
 
 #[derive(Serialize)]
-pub struct PomodoroStatusDto {
-    active: Option<PomodoroSession>,
-    focus_done_today: i64,
-    config: PomodoroConfig,
-}
-
-#[derive(Serialize)]
 pub struct DndStatusDto {
     manual: bool,
     effective: &'static str,
@@ -709,17 +685,6 @@ pub struct MonitorInfo {
     width: u32,
     height: u32,
     primary: bool,
-}
-
-fn pomodoro_status_dto(app: &AppHandle) -> CmdResult<PomodoroStatusDto> {
-    let state = app.state::<AppState>();
-    let store = state.store.lock().unwrap();
-    let now = now_ms();
-    Ok(PomodoroStatusDto {
-        active: pomodoro::active_session(&store, now).map_err(err)?,
-        focus_done_today: store.completed_focus_since(day_start_ms()).map_err(err)?,
-        config: PomodoroConfig::load(&store),
-    })
 }
 
 fn dnd_status_dto(app: &AppHandle) -> CmdResult<DndStatusDto> {
@@ -1003,68 +968,6 @@ pub fn focus_presets(state: State<AppState>) -> CmdResult<Vec<PomodoroPreset>> {
     focus_presets_from_store(&store).map_err(err)
 }
 
-pub fn do_pomodoro_start(
-    app: &AppHandle,
-    kind: SessionKind,
-    label: Option<&str>,
-) -> CmdResult<PomodoroStatusDto> {
-    touch(app);
-    {
-        let state = app.state::<AppState>();
-        let store = state.store.lock().unwrap();
-        let cfg = PomodoroConfig::load(&store);
-        let now = now_ms();
-        if kind == SessionKind::Focus {
-            let preset_id = store.default_preset().map_err(err)?.id;
-            let request = StartSession::focus(
-                preset_id,
-                label.unwrap_or_default(),
-                cfg.duration_ms(SessionKind::Focus),
-            );
-            apply_focus_start(&store, request, now).map_err(err)?;
-        } else {
-            pomodoro::start_break(&store, kind, cfg.duration_ms(kind), now).map_err(err)?;
-        }
-    }
-    let _ = sync_and_emit_focus_changed(app).map_err(err)?;
-    pomodoro_status_dto(app)
-}
-
-pub fn do_pomodoro_abort(app: &AppHandle) -> CmdResult<PomodoroStatusDto> {
-    touch(app);
-    {
-        let state = app.state::<AppState>();
-        let store = state.store.lock().unwrap();
-        apply_legacy_abort(&store, now_ms()).map_err(err)?;
-    }
-    let _ = sync_and_emit_focus_changed(app).map_err(err)?;
-    pomodoro_status_dto(app)
-}
-
-/// Bridge legacy per il piano Buddy/Surfaces. I nuovi chiamanti usano
-/// `focus_start`, che accetta direttamente il DTO di dominio.
-#[tauri::command]
-pub async fn pomodoro_start(
-    app: AppHandle,
-    kind: SessionKind,
-    label: Option<String>,
-) -> CmdResult<PomodoroStatusDto> {
-    do_pomodoro_start(&app, kind, label.as_deref())
-}
-
-/// Bridge legacy per il piano Buddy/Surfaces. Mappa l'abort storico
-/// sull'esito persistente `interrupted` tramite la stessa funzione core.
-#[tauri::command]
-pub async fn pomodoro_abort(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
-    do_pomodoro_abort(&app)
-}
-
-/// Bridge legacy di sola lettura; `focus_status` è il contratto revisionato.
-#[tauri::command]
-pub fn pomodoro_status(app: AppHandle) -> CmdResult<PomodoroStatusDto> {
-    pomodoro_status_dto(&app)
-}
-
 #[tauri::command]
 pub fn pomodoro_history(
     state: State<AppState>,
@@ -1083,66 +986,73 @@ pub fn pomodoro_presentation_ack(state: State<AppState>, id: i64) -> CmdResult<(
 }
 
 #[derive(Clone, Copy)]
-enum LegacyBreakAction {
-    Accept,
-    Skip,
+enum FocusCompletionAction {
+    WithBreak,
+    WithoutBreak,
 }
 
-fn apply_legacy_break_action(
-    store: &win_buddy_core::Store,
-    action: LegacyBreakAction,
+fn apply_focus_completion_action_from_store(
+    store: &Store,
+    action: FocusCompletionAction,
     event_id: i64,
     now: i64,
     day_start: i64,
-) -> win_buddy_core::Result<()> {
-    match action {
-        LegacyBreakAction::Accept => pomodoro::accept_proposed_break(
+    cursor: &AtomicU64,
+) -> FocusCmdResult<FocusStatusDto> {
+    let result = match action {
+        FocusCompletionAction::WithBreak => pomodoro::accept_proposed_break(
             store,
             event_id,
             now,
             day_start,
             &PomodoroConfig::load(store),
         ),
-        LegacyBreakAction::Skip => pomodoro::skip_proposed_break(store, event_id, now),
-    }
+        FocusCompletionAction::WithoutBreak => {
+            pomodoro::skip_proposed_break(store, event_id, now)
+        }
+    };
+    result.map_err(|error| focus_command_error_from_store(store, now, cursor, error))?;
+    focus_status_from_store(store, now, cursor).map_err(focus_internal_error)
+}
+
+fn do_focus_completion(
+    app: &AppHandle,
+    action: FocusCompletionAction,
+    event_id: i64,
+) -> FocusCmdResult<FocusStatusDto> {
+    let now = now_ms();
+    let status = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        apply_focus_completion_action_from_store(
+            &store,
+            action,
+            event_id,
+            now,
+            day_start_ms(),
+            &state.focus_snapshot_cursor,
+        )
+    }?;
+    touch(app);
+    presenter::sync(app);
+    emit_focus_changed(app, &status);
+    Ok(status)
 }
 
 #[tauri::command]
-pub async fn break_accept(app: AppHandle, event_id: i64) -> CmdResult<PomodoroStatusDto> {
-    touch(&app);
-    {
-        let state = app.state::<AppState>();
-        let store = state.store.lock().unwrap();
-        apply_legacy_break_action(
-            &store,
-            LegacyBreakAction::Accept,
-            event_id,
-            now_ms(),
-            day_start_ms(),
-        )
-        .map_err(err)?;
-    }
-    let _ = sync_and_emit_focus_changed(&app).map_err(err)?;
-    pomodoro_status_dto(&app)
+pub async fn focus_complete_with_break(
+    app: AppHandle,
+    event_id: i64,
+) -> FocusCmdResult<FocusStatusDto> {
+    do_focus_completion(&app, FocusCompletionAction::WithBreak, event_id)
 }
 
 #[tauri::command]
-pub async fn break_skip(app: AppHandle, event_id: i64) -> CmdResult<PomodoroStatusDto> {
-    touch(&app);
-    {
-        let state = app.state::<AppState>();
-        let store = state.store.lock().unwrap();
-        apply_legacy_break_action(
-            &store,
-            LegacyBreakAction::Skip,
-            event_id,
-            now_ms(),
-            day_start_ms(),
-        )
-        .map_err(err)?;
-    }
-    let _ = sync_and_emit_focus_changed(&app).map_err(err)?;
-    pomodoro_status_dto(&app)
+pub async fn focus_complete_without_break(
+    app: AppHandle,
+    event_id: i64,
+) -> FocusCmdResult<FocusStatusDto> {
+    do_focus_completion(&app, FocusCompletionAction::WithoutBreak, event_id)
 }
 
 // ------------------------------------------------------------ impostazioni
@@ -1642,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_snapshots_order_start_mutation_and_legacy_close_on_one_cursor() {
+    fn focus_snapshots_order_start_and_mutations_on_one_cursor() {
         let store = Store::open_in_memory().unwrap();
         let cursor = std::sync::atomic::AtomicU64::new(0);
         let started = apply_focus_start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0)
@@ -1660,18 +1570,28 @@ mod tests {
         )
         .unwrap();
         let after_mutation = focus_status_from_store(&store, MIN, &cursor).unwrap();
-        apply_legacy_abort(&store, 2 * MIN).unwrap();
-        let after_legacy = focus_status_from_store(&store, 2 * MIN, &cursor).unwrap();
+        apply_focus_mutation(
+            &store,
+            FocusMutation::Finish {
+                session_id: started.id,
+                expected_revision: 1,
+                outcome: SessionOutcome::Interrupted,
+                interruption_reason: None,
+            },
+            2 * MIN,
+        )
+        .unwrap();
+        let after_finish = focus_status_from_store(&store, 2 * MIN, &cursor).unwrap();
 
         assert_eq!(
             [
                 after_start.snapshot_cursor,
                 after_mutation.snapshot_cursor,
-                after_legacy.snapshot_cursor,
+                after_finish.snapshot_cursor,
             ],
             [1, 2, 3]
         );
-        assert!(after_legacy.active.is_none());
+        assert!(after_finish.active.is_none());
     }
 
     #[test]
@@ -1953,20 +1873,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_abort_maps_to_the_interrupted_outcome() {
-        let store = Store::open_in_memory().unwrap();
-        let started =
-            pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0).unwrap();
-
-        apply_legacy_abort(&store, 5 * MIN).unwrap();
-
-        let closed = store.get_session(started.session.id).unwrap().unwrap();
-        assert_eq!(closed.phase, SessionPhase::Closed);
-        assert_eq!(closed.outcome, Some(SessionOutcome::Interrupted));
-        assert_eq!(closed.interruption_reason, None);
-    }
-
-    #[test]
     fn focus_cycle_survives_restarts_before_overtime_and_completion() {
         let database = TempDatabase::new();
         let session_id;
@@ -2063,40 +1969,110 @@ mod tests {
     }
 
     #[test]
-    fn legacy_break_accept_completes_ready_focus_and_starts_proposed_break() {
+    fn focus_completion_with_break_returns_snapshot_and_applies_one_atomic_transition() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
         let focus = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
             .unwrap()
             .session;
         let event = pomodoro::tick(&store, MIN).unwrap().remove(0);
 
-        apply_legacy_break_action(&store, LegacyBreakAction::Accept, event.id, MIN, 0).unwrap();
+        let status = apply_focus_completion_action_from_store(
+            &store,
+            FocusCompletionAction::WithBreak,
+            event.id,
+            MIN,
+            0,
+            &cursor,
+        )
+        .unwrap();
 
+        assert_eq!(status.snapshot_cursor, 1);
         assert_eq!(
             store.get_session(focus.id).unwrap().unwrap().outcome,
             Some(SessionOutcome::Completed)
         );
-        let active = store.open_session().unwrap().unwrap();
+        let active = status.active.unwrap();
         assert_eq!(active.kind, SessionKind::ShortBreak);
         assert_eq!(active.phase, win_buddy_core::model::SessionPhase::Running);
         assert!(store.pending_presentation_events().unwrap().is_empty());
     }
 
     #[test]
-    fn legacy_break_skip_completes_ready_focus_without_starting_break() {
+    fn focus_completion_without_break_returns_snapshot_and_applies_one_atomic_transition() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
         let focus = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
             .unwrap()
             .session;
         let event = pomodoro::tick(&store, MIN).unwrap().remove(0);
 
-        apply_legacy_break_action(&store, LegacyBreakAction::Skip, event.id, MIN, 0).unwrap();
+        let status = apply_focus_completion_action_from_store(
+            &store,
+            FocusCompletionAction::WithoutBreak,
+            event.id,
+            MIN,
+            0,
+            &cursor,
+        )
+        .unwrap();
 
+        assert_eq!(status.snapshot_cursor, 1);
+        assert!(status.active.is_none());
         assert_eq!(
             store.get_session(focus.id).unwrap().unwrap().outcome,
             Some(SessionOutcome::Completed)
         );
         assert!(store.open_session().unwrap().is_none());
         assert!(store.pending_presentation_events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_focus_completion_event_returns_typed_current_snapshot_without_mutation() {
+        let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
+        let original = pomodoro::start(&store, StartSession::focus(1, "Prima", MIN), 0)
+            .unwrap()
+            .session;
+        let obsolete_event = pomodoro::tick(&store, MIN).unwrap().remove(0);
+        pomodoro::finish(
+            &store,
+            original.id,
+            1,
+            SessionOutcome::Completed,
+            None,
+            MIN,
+        )
+        .unwrap();
+        let replacement = pomodoro::start(
+            &store,
+            StartSession::focus(1, "Seconda", MIN),
+            2 * MIN,
+        )
+        .unwrap()
+        .session;
+        let current_event = pomodoro::tick(&store, 3 * MIN).unwrap().remove(0);
+        let before = store.get_session(replacement.id).unwrap().unwrap();
+
+        let error = apply_focus_completion_action_from_store(
+            &store,
+            FocusCompletionAction::WithBreak,
+            obsolete_event.id,
+            3 * MIN,
+            0,
+            &cursor,
+        )
+        .unwrap_err();
+
+        let payload = serde_json::to_value(error).unwrap();
+        assert_eq!(payload["code"], "invalid_request");
+        assert_eq!(payload["current"]["snapshot_cursor"], 1);
+        assert_eq!(payload["current"]["active"]["id"], replacement.id);
+        assert_eq!(payload["current"]["active"]["phase"], "ready_to_close");
+        assert_eq!(store.get_session(replacement.id).unwrap().unwrap(), before);
+        assert_eq!(
+            store.pending_presentation_events().unwrap(),
+            vec![current_event]
+        );
     }
 }

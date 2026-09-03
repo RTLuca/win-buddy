@@ -247,19 +247,6 @@ export type FocusCommandError =
   | { code: "invalid_request"; message: string; current: FocusStatus }
   | { code: "internal"; message: string; current: FocusStatus | null };
 
-/** Contratto legacy conservato soltanto durante il piano Buddy/Surfaces. */
-export interface PomodoroStatus {
-  active: PomodoroSession | null;
-  focus_done_today: number;
-  config: {
-    focus_min: number;
-    short_min: number;
-    long_min: number;
-    long_every: number;
-    stale_sec: number;
-  };
-}
-
 export interface DndStatus {
   manual: boolean;
   effective: "normal" | "discreet" | "hidden";

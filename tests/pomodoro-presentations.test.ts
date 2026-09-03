@@ -181,10 +181,10 @@ test("subscription and replay failures are reported without rejecting startup", 
   }
 });
 
-test("a ready focus renders the legacy break actions with the outbox id", () => {
+test("a ready focus explains that either prompt choice completes the session", () => {
   assert.deepEqual(pomodoroPresentationBubble(presentation), {
     id: 41,
-    text: "Tempo scaduto · chiudi il focus e scegli la pausa.",
+    text: "Tempo scaduto · entrambe le scelte completano il focus.",
     kind: "break_prompt",
     urgent: false,
   });
