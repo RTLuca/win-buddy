@@ -7,7 +7,7 @@ use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 use win_buddy_core::dnd::DndLevel;
 
-use crate::commands::{self, FocusAction, FocusFinishOutcome};
+use crate::commands::{self, ExpectedSessionKind, FocusAction, FocusFinishOutcome};
 use crate::state::AppState;
 use crate::surfaces;
 
@@ -71,21 +71,31 @@ fn focus_action_label(action: FocusAction) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayFocusRequest {
     Action(FocusAction),
-    Finish(FocusFinishOutcome),
+    Finish {
+        expected_kind: ExpectedSessionKind,
+        outcome: FocusFinishOutcome,
+    },
 }
 
 fn tray_focus_request(id: &str, allowed: &[FocusAction]) -> Option<TrayFocusRequest> {
     let finish = match id {
-        "focus.finish.completed" => Some(FocusFinishOutcome::Completed),
-        "focus.finish.partial" => Some(FocusFinishOutcome::Partial),
-        "focus.finish.interrupted" => Some(FocusFinishOutcome::Interrupted),
-        "break.finish.partial" => Some(FocusFinishOutcome::Partial),
+        "focus.finish.completed" => {
+            Some((ExpectedSessionKind::Focus, FocusFinishOutcome::Completed))
+        }
+        "focus.finish.partial" => Some((ExpectedSessionKind::Focus, FocusFinishOutcome::Partial)),
+        "focus.finish.interrupted" => {
+            Some((ExpectedSessionKind::Focus, FocusFinishOutcome::Interrupted))
+        }
+        "break.finish.partial" => Some((ExpectedSessionKind::Break, FocusFinishOutcome::Partial)),
         _ => None,
     };
-    if let Some(outcome) = finish {
+    if let Some((expected_kind, outcome)) = finish {
         return allowed
             .contains(&FocusAction::Finish)
-            .then_some(TrayFocusRequest::Finish(outcome));
+            .then_some(TrayFocusRequest::Finish {
+                expected_kind,
+                outcome,
+            });
     }
     let action = match id {
         "focus.start_last" => FocusAction::StartLast,
@@ -200,8 +210,12 @@ fn on_menu(app: &AppHandle, id: &str) {
                         log::warn!("azione tray Focus rifiutata: {error:?}");
                     }
                 }
-                Some(TrayFocusRequest::Finish(outcome)) => {
-                    if let Err(error) = commands::dispatch_focus_finish(app, outcome) {
+                Some(TrayFocusRequest::Finish {
+                    expected_kind,
+                    outcome,
+                }) => {
+                    if let Err(error) = commands::dispatch_focus_finish(app, expected_kind, outcome)
+                    {
                         log::warn!("conclusione tray Focus rifiutata: {error:?}");
                     }
                 }
@@ -336,19 +350,31 @@ mod tests {
     fn finish_menu_ids_preserve_every_explicit_outcome() {
         assert_eq!(
             tray_focus_request("focus.finish.completed", &[FocusAction::Finish]),
-            Some(TrayFocusRequest::Finish(FocusFinishOutcome::Completed))
+            Some(TrayFocusRequest::Finish {
+                expected_kind: ExpectedSessionKind::Focus,
+                outcome: FocusFinishOutcome::Completed,
+            })
         );
         assert_eq!(
             tray_focus_request("focus.finish.partial", &[FocusAction::Finish]),
-            Some(TrayFocusRequest::Finish(FocusFinishOutcome::Partial))
+            Some(TrayFocusRequest::Finish {
+                expected_kind: ExpectedSessionKind::Focus,
+                outcome: FocusFinishOutcome::Partial,
+            })
         );
         assert_eq!(
             tray_focus_request("focus.finish.interrupted", &[FocusAction::Finish]),
-            Some(TrayFocusRequest::Finish(FocusFinishOutcome::Interrupted))
+            Some(TrayFocusRequest::Finish {
+                expected_kind: ExpectedSessionKind::Focus,
+                outcome: FocusFinishOutcome::Interrupted,
+            })
         );
         assert_eq!(
             tray_focus_request("break.finish.partial", &[FocusAction::Finish]),
-            Some(TrayFocusRequest::Finish(FocusFinishOutcome::Partial))
+            Some(TrayFocusRequest::Finish {
+                expected_kind: ExpectedSessionKind::Break,
+                outcome: FocusFinishOutcome::Partial,
+            })
         );
     }
 }

@@ -107,6 +107,12 @@ pub enum FocusFinishOutcome {
     Interrupted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpectedSessionKind {
+    Focus,
+    Break,
+}
+
 impl From<FocusFinishOutcome> for SessionOutcome {
     fn from(outcome: FocusFinishOutcome) -> Self {
         match outcome {
@@ -465,6 +471,7 @@ fn shell_action_rejection(
     current: &FocusStatusDto,
     action: FocusAction,
     outcome: Option<FocusFinishOutcome>,
+    expected_kind: Option<ExpectedSessionKind>,
 ) -> Option<&'static str> {
     if !current.allowed_actions.contains(&action) {
         return Some("azione Focus non disponibile nello stato corrente");
@@ -472,8 +479,27 @@ fn shell_action_rejection(
     if action == FocusAction::StartBreak {
         return Some("avvio pausa non disponibile dalla shell");
     }
-    if action == FocusAction::Finish && outcome.is_none() {
-        return Some("scegli un esito esplicito per concludere la sessione");
+    if action == FocusAction::Finish {
+        let Some(outcome) = outcome else {
+            return Some("scegli un esito esplicito per concludere la sessione");
+        };
+        let Some(expected_kind) = expected_kind else {
+            return Some("tipo di sessione atteso mancante per la conclusione");
+        };
+        let matches_expected_kind = current.active.as_ref().is_some_and(|session| {
+            matches!(
+                (expected_kind, session.kind),
+                (ExpectedSessionKind::Focus, SessionKind::Focus)
+                    | (ExpectedSessionKind::Break, SessionKind::ShortBreak)
+                    | (ExpectedSessionKind::Break, SessionKind::LongBreak)
+            )
+        });
+        if !matches_expected_kind {
+            return Some("la sessione corrente non corrisponde al comando di conclusione");
+        }
+        if expected_kind == ExpectedSessionKind::Break && outcome != FocusFinishOutcome::Partial {
+            return Some("una pausa può essere conclusa solo con esito parziale");
+        }
     }
     None
 }
@@ -486,127 +512,143 @@ fn shell_session_target(current: &FocusStatusDto) -> Result<(i64, i64), &'static
         .ok_or("sessione Focus non disponibile nello stato corrente")
 }
 
+fn apply_shell_action_from_store(
+    store: &Store,
+    now: i64,
+    cursor: &AtomicU64,
+    action: FocusAction,
+    outcome: Option<FocusFinishOutcome>,
+    expected_kind: Option<ExpectedSessionKind>,
+) -> FocusCmdResult<Option<FocusStatusDto>> {
+    let current = focus_status_from_store(store, now, cursor).map_err(focus_internal_error)?;
+    if let Some(message) = shell_action_rejection(&current, action, outcome, expected_kind) {
+        return Err(unavailable_focus_action(message, current));
+    }
+    if action == FocusAction::Capture {
+        return Ok(Some(current));
+    }
+
+    let result = match action {
+        FocusAction::StartLast => apply_focus_start_last(store, now),
+        FocusAction::Pause => {
+            let (session_id, expected_revision) = shell_session_target(&current)
+                .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+            apply_focus_mutation(
+                store,
+                FocusMutation::Pause {
+                    session_id,
+                    expected_revision,
+                    reason: None,
+                },
+                now,
+            )
+        }
+        FocusAction::Resume => {
+            let (session_id, expected_revision) = shell_session_target(&current)
+                .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+            apply_focus_mutation(
+                store,
+                FocusMutation::Resume {
+                    session_id,
+                    expected_revision,
+                },
+                now,
+            )
+        }
+        FocusAction::Extend5 => {
+            let (session_id, expected_revision) = shell_session_target(&current)
+                .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+            apply_focus_mutation(
+                store,
+                FocusMutation::Adjust {
+                    session_id,
+                    expected_revision,
+                    delta_ms: 5 * 60_000,
+                },
+                now,
+            )
+        }
+        FocusAction::Overtime => {
+            let (session_id, expected_revision) = shell_session_target(&current)
+                .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+            apply_focus_mutation(
+                store,
+                FocusMutation::Overtime {
+                    session_id,
+                    expected_revision,
+                },
+                now,
+            )
+        }
+        FocusAction::SkipBreak => {
+            let (session_id, expected_revision) = shell_session_target(&current)
+                .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+            apply_focus_mutation(
+                store,
+                FocusMutation::Finish {
+                    session_id,
+                    expected_revision,
+                    outcome: SessionOutcome::Partial,
+                    interruption_reason: None,
+                },
+                now,
+            )
+        }
+        FocusAction::Finish => {
+            let Some(outcome) = outcome else {
+                return Err(unavailable_focus_action(
+                    "scegli un esito esplicito per concludere la sessione",
+                    current,
+                ));
+            };
+            let (session_id, expected_revision) = shell_session_target(&current)
+                .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+            apply_focus_mutation(
+                store,
+                FocusMutation::Finish {
+                    session_id,
+                    expected_revision,
+                    outcome: outcome.into(),
+                    interruption_reason: None,
+                },
+                now,
+            )
+        }
+        FocusAction::StartBreak => {
+            return Err(unavailable_focus_action(
+                "avvio pausa non disponibile dalla shell",
+                current,
+            ));
+        }
+        FocusAction::Capture => {
+            return Err(unavailable_focus_action(
+                "cattura Focus non disponibile dalla shell",
+                current,
+            ));
+        }
+    };
+    result.map_err(|error| focus_command_error_from_store(store, now, cursor, error))?;
+    Ok(None)
+}
+
 fn dispatch_focus_action_with_outcome(
     app: &AppHandle,
     action: FocusAction,
     outcome: Option<FocusFinishOutcome>,
+    expected_kind: Option<ExpectedSessionKind>,
 ) -> FocusCmdResult<FocusStatusDto> {
     let now = now_ms();
     let unchanged = {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        let current = focus_status_from_store(&store, now, &state.focus_snapshot_cursor)
-            .map_err(focus_internal_error)?;
-        if let Some(message) = shell_action_rejection(&current, action, outcome) {
-            return Err(unavailable_focus_action(message, current));
-        }
-        if action == FocusAction::Capture {
-            Some(current)
-        } else {
-            let result = match action {
-                FocusAction::StartLast => apply_focus_start_last(&store, now),
-                FocusAction::Pause => {
-                    let (session_id, expected_revision) = shell_session_target(&current)
-                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
-                    apply_focus_mutation(
-                        &store,
-                        FocusMutation::Pause {
-                            session_id,
-                            expected_revision,
-                            reason: None,
-                        },
-                        now,
-                    )
-                }
-                FocusAction::Resume => {
-                    let (session_id, expected_revision) = shell_session_target(&current)
-                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
-                    apply_focus_mutation(
-                        &store,
-                        FocusMutation::Resume {
-                            session_id,
-                            expected_revision,
-                        },
-                        now,
-                    )
-                }
-                FocusAction::Extend5 => {
-                    let (session_id, expected_revision) = shell_session_target(&current)
-                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
-                    apply_focus_mutation(
-                        &store,
-                        FocusMutation::Adjust {
-                            session_id,
-                            expected_revision,
-                            delta_ms: 5 * 60_000,
-                        },
-                        now,
-                    )
-                }
-                FocusAction::Overtime => {
-                    let (session_id, expected_revision) = shell_session_target(&current)
-                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
-                    apply_focus_mutation(
-                        &store,
-                        FocusMutation::Overtime {
-                            session_id,
-                            expected_revision,
-                        },
-                        now,
-                    )
-                }
-                FocusAction::SkipBreak => {
-                    let (session_id, expected_revision) = shell_session_target(&current)
-                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
-                    apply_focus_mutation(
-                        &store,
-                        FocusMutation::Finish {
-                            session_id,
-                            expected_revision,
-                            outcome: SessionOutcome::Partial,
-                            interruption_reason: None,
-                        },
-                        now,
-                    )
-                }
-                FocusAction::Finish => {
-                    let Some(outcome) = outcome else {
-                        return Err(unavailable_focus_action(
-                            "scegli un esito esplicito per concludere la sessione",
-                            current,
-                        ));
-                    };
-                    let (session_id, expected_revision) = shell_session_target(&current)
-                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
-                    apply_focus_mutation(
-                        &store,
-                        FocusMutation::Finish {
-                            session_id,
-                            expected_revision,
-                            outcome: outcome.into(),
-                            interruption_reason: None,
-                        },
-                        now,
-                    )
-                }
-                FocusAction::StartBreak => {
-                    return Err(unavailable_focus_action(
-                        "avvio pausa non disponibile dalla shell",
-                        current,
-                    ));
-                }
-                FocusAction::Capture => {
-                    return Err(unavailable_focus_action(
-                        "cattura Focus non disponibile dalla shell",
-                        current,
-                    ));
-                }
-            };
-            result.map_err(|error| {
-                focus_command_error_from_store(&store, now, &state.focus_snapshot_cursor, error)
-            })?;
-            None
-        }
+        apply_shell_action_from_store(
+            &store,
+            now,
+            &state.focus_snapshot_cursor,
+            action,
+            outcome,
+            expected_kind,
+        )?
     };
     touch(app);
     if let Some(status) = unchanged {
@@ -622,14 +664,15 @@ pub(crate) fn dispatch_focus_action(
     app: &AppHandle,
     action: FocusAction,
 ) -> FocusCmdResult<FocusStatusDto> {
-    dispatch_focus_action_with_outcome(app, action, None)
+    dispatch_focus_action_with_outcome(app, action, None, None)
 }
 
 pub(crate) fn dispatch_focus_finish(
     app: &AppHandle,
+    expected_kind: ExpectedSessionKind,
     outcome: FocusFinishOutcome,
 ) -> FocusCmdResult<FocusStatusDto> {
-    dispatch_focus_action_with_outcome(app, FocusAction::Finish, Some(outcome))
+    dispatch_focus_action_with_outcome(app, FocusAction::Finish, Some(outcome), Some(expected_kind))
 }
 
 #[derive(Serialize)]
@@ -1468,8 +1511,133 @@ mod tests {
         status.allowed_actions = vec![FocusAction::StartBreak];
 
         assert_eq!(
-            shell_action_rejection(&status, FocusAction::StartBreak, None),
+            shell_action_rejection(&status, FocusAction::StartBreak, None, None),
             Some("avvio pausa non disponibile dalla shell")
+        );
+    }
+
+    fn assert_shell_finish_rejected_without_mutation(
+        store: &Store,
+        expected_kind: ExpectedSessionKind,
+        outcome: FocusFinishOutcome,
+    ) {
+        let cursor = AtomicU64::new(0);
+        let before = store.open_session().unwrap().unwrap();
+
+        let error = apply_shell_action_from_store(
+            store,
+            MIN,
+            &cursor,
+            FocusAction::Finish,
+            Some(outcome),
+            Some(expected_kind),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, FocusCommandError::InvalidRequest { .. }));
+        assert_eq!(store.open_session().unwrap().unwrap(), before);
+    }
+
+    #[test]
+    fn stale_focus_finish_ids_cannot_close_a_break() {
+        for outcome in [
+            FocusFinishOutcome::Completed,
+            FocusFinishOutcome::Interrupted,
+        ] {
+            let store = Store::open_in_memory().unwrap();
+            pomodoro::start_break(&store, SessionKind::ShortBreak, 5 * MIN, 0).unwrap();
+
+            assert_shell_finish_rejected_without_mutation(
+                &store,
+                ExpectedSessionKind::Focus,
+                outcome,
+            );
+        }
+    }
+
+    #[test]
+    fn stale_break_finish_id_cannot_close_a_new_focus() {
+        let store = Store::open_in_memory().unwrap();
+        pomodoro::start(&store, StartSession::focus(1, "Nuovo focus", 25 * MIN), 0).unwrap();
+
+        assert_shell_finish_rejected_without_mutation(
+            &store,
+            ExpectedSessionKind::Break,
+            FocusFinishOutcome::Partial,
+        );
+    }
+
+    #[test]
+    fn break_finish_rejects_completed_and_interrupted_outcomes() {
+        for outcome in [
+            FocusFinishOutcome::Completed,
+            FocusFinishOutcome::Interrupted,
+        ] {
+            let store = Store::open_in_memory().unwrap();
+            pomodoro::start_break(&store, SessionKind::LongBreak, 10 * MIN, 0).unwrap();
+
+            assert_shell_finish_rejected_without_mutation(
+                &store,
+                ExpectedSessionKind::Break,
+                outcome,
+            );
+        }
+    }
+
+    #[test]
+    fn valid_focus_finish_accepts_every_explicit_outcome() {
+        for (outcome, stored) in [
+            (FocusFinishOutcome::Completed, SessionOutcome::Completed),
+            (FocusFinishOutcome::Partial, SessionOutcome::Partial),
+            (FocusFinishOutcome::Interrupted, SessionOutcome::Interrupted),
+        ] {
+            let store = Store::open_in_memory().unwrap();
+            let started =
+                pomodoro::start(&store, StartSession::focus(1, "Focus", 25 * MIN), 0).unwrap();
+
+            apply_shell_action_from_store(
+                &store,
+                MIN,
+                &AtomicU64::new(0),
+                FocusAction::Finish,
+                Some(outcome),
+                Some(ExpectedSessionKind::Focus),
+            )
+            .unwrap();
+
+            assert_eq!(
+                store
+                    .get_session(started.session.id)
+                    .unwrap()
+                    .unwrap()
+                    .outcome,
+                Some(stored)
+            );
+        }
+    }
+
+    #[test]
+    fn valid_break_finish_accepts_only_explicit_partial() {
+        let store = Store::open_in_memory().unwrap();
+        let started = pomodoro::start_break(&store, SessionKind::ShortBreak, 5 * MIN, 0).unwrap();
+
+        apply_shell_action_from_store(
+            &store,
+            MIN,
+            &AtomicU64::new(0),
+            FocusAction::Finish,
+            Some(FocusFinishOutcome::Partial),
+            Some(ExpectedSessionKind::Break),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store
+                .get_session(started.session.id)
+                .unwrap()
+                .unwrap()
+                .outcome,
+            Some(SessionOutcome::Partial)
         );
     }
 
