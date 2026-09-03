@@ -31,9 +31,40 @@ export type OverlayActionCommand =
     };
 
 export interface FocusSnapshotGate {
-  beginRead(): number;
-  applyRead(token: number, status: FocusStatus): void;
-  applyAuthoritative(status: FocusStatus): void;
+  beginRequest(): FocusSnapshotRequest;
+  isCurrent(token: FocusSnapshotRequest): boolean;
+  applyResponse(token: FocusSnapshotRequest, status: FocusStatus): boolean;
+  applyEvent(status: FocusStatus): boolean;
+}
+
+export interface FocusSnapshotRequest {
+  sequence: number;
+  sessionId: number | null;
+  revision: number | null;
+}
+
+export interface FocusPresentationState {
+  status: FocusStatus | null;
+  statusError: string | null;
+  feedback: string | null;
+  finishChooserOpen: boolean;
+}
+
+export interface FocusPresentationController {
+  readonly state: FocusPresentationState;
+  applySnapshot(status: FocusStatus): void;
+  showFailure(message: string): void;
+  clearFeedback(): void;
+  openFinishChooser(): void;
+  closeFinishChooser(restoreFocus?: boolean): void;
+}
+
+export interface FocusPresentationEffects {
+  render(
+    state: Readonly<FocusPresentationState>,
+    options: { restoreFinishFocus: boolean },
+  ): void;
+  reportHitbox(): void;
 }
 
 export interface OverlayVisibilityInput {
@@ -115,19 +146,133 @@ export function focusFinishCommand(
   return target ? { type: "finish", ...target, outcome } : null;
 }
 
-/** Un evento o una mutazione autorevole rende obsoleta ogni lettura pendente. */
+function snapshotIdentity(status: FocusStatus | null): {
+  sessionId: number | null;
+  revision: number | null;
+} {
+  return status?.active
+    ? {
+        sessionId: status.active.id,
+        revision: status.active.transition_revision,
+      }
+    : { sessionId: null, revision: null };
+}
+
+function sameIdentity(
+  left: { sessionId: number | null; revision: number | null },
+  right: { sessionId: number | null; revision: number | null },
+): boolean {
+  return left.sessionId === right.sessionId && left.revision === right.revision;
+}
+
+function eventDoesNotRegress(current: FocusStatus | null, next: FocusStatus): boolean {
+  const before = snapshotIdentity(current);
+  const after = snapshotIdentity(next);
+  return (
+    before.sessionId === null ||
+    after.sessionId === null ||
+    before.sessionId !== after.sessionId ||
+    (after.revision ?? -1) >= (before.revision ?? -1)
+  );
+}
+
+function responseMatchesRequest(
+  request: FocusSnapshotRequest,
+  response: FocusStatus,
+): boolean {
+  const after = snapshotIdentity(response);
+  if (
+    request.sessionId === null ||
+    after.sessionId === null ||
+    request.sessionId !== after.sessionId
+  ) {
+    return true;
+  }
+  return (after.revision ?? -1) >= (request.revision ?? -1);
+}
+
+/**
+ * Serializza snapshot pull, risposte di mutazione ed eventi push. Il token
+ * include l'identità osservata per non confondere due sessioni con la stessa
+ * revisione; ogni evento invalida le risposte IPC già in volo.
+ */
 export function createFocusSnapshotGate(
   apply: (status: FocusStatus) => void,
 ): FocusSnapshotGate {
-  let version = 0;
+  let sequence = 0;
+  let current: FocusStatus | null = null;
+  const isCurrent = (token: FocusSnapshotRequest): boolean =>
+    token.sequence === sequence &&
+    sameIdentity(token, snapshotIdentity(current));
   return {
-    beginRead: () => ++version,
-    applyRead(token, status) {
-      if (token === version) apply(status);
+    beginRequest() {
+      const identity = snapshotIdentity(current);
+      return { sequence: ++sequence, ...identity };
     },
-    applyAuthoritative(status) {
-      version += 1;
+    isCurrent,
+    applyResponse(token, status) {
+      if (!isCurrent(token)) return false;
+      sequence += 1;
+      if (!responseMatchesRequest(token, status)) return false;
+      current = status;
       apply(status);
+      return true;
+    },
+    applyEvent(status) {
+      sequence += 1;
+      if (!eventDoesNotRegress(current, status)) return false;
+      current = status;
+      apply(status);
+      return true;
+    },
+  };
+}
+
+export function createFocusPresentationController(
+  effects: FocusPresentationEffects,
+): FocusPresentationController {
+  let state: FocusPresentationState = {
+    status: null,
+    statusError: null,
+    feedback: null,
+    finishChooserOpen: false,
+  };
+
+  const commit = (
+    next: FocusPresentationState,
+    restoreFinishFocus = false,
+  ): void => {
+    state = next;
+    effects.render(state, { restoreFinishFocus });
+    effects.reportHitbox();
+  };
+
+  return {
+    get state() {
+      return state;
+    },
+    applySnapshot(status) {
+      commit({
+        status,
+        statusError: null,
+        feedback: null,
+        finishChooserOpen: false,
+      });
+    },
+    showFailure(message) {
+      commit({ ...state, statusError: message, feedback: message });
+    },
+    clearFeedback() {
+      if (state.feedback === null) return;
+      commit({ ...state, feedback: null });
+    },
+    openFinishChooser() {
+      if (state.finishChooserOpen) return;
+      commit({ ...state, finishChooserOpen: true });
+    },
+    closeFinishChooser(restoreFocus = false) {
+      if (!state.finishChooserOpen) return;
+      commit({ ...state, finishChooserOpen: false }, restoreFocus);
     },
   };
 }
@@ -194,4 +339,20 @@ export function overlayCommandFailure(error: unknown): OverlayCommandFailure {
       error instanceof Error ? error.message : "Impossibile completare l’azione.",
     current: null,
   };
+}
+
+/** Mostra un errore IPC soltanto se appartiene ancora alla richiesta corrente. */
+export function presentOverlayCommandFailure(
+  gate: FocusSnapshotGate,
+  presentation: FocusPresentationController,
+  request: FocusSnapshotRequest,
+  error: unknown,
+): boolean {
+  const failure = overlayCommandFailure(error);
+  const responseIsCurrent = failure.current
+    ? gate.applyResponse(request, failure.current)
+    : gate.isCurrent(request);
+  if (!responseIsCurrent) return false;
+  presentation.showFailure(failure.message);
+  return true;
 }

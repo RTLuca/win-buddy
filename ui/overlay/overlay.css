@@ -202,6 +202,7 @@
 .focus-actions {
   min-width: 0;
   justify-content: center;
+  flex-wrap: nowrap;
   gap: 4px;
   overflow-x: auto;
   scrollbar-width: none;
@@ -428,6 +429,10 @@
     width: calc(100vw - 8px);
   }
 
+  .focus-actions {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

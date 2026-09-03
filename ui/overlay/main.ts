@@ -31,12 +31,13 @@ import {
 import * as ipc from "../shared/ipc";
 import { BubbleLayer } from "./bubbles";
 import {
+  createFocusPresentationController,
   createFocusSnapshotGate,
   focusFinishCommand,
   focusHitbox,
   overlayActionCommand,
-  overlayCommandFailure,
   overlayVisibility,
+  presentOverlayCommandFailure,
   type FocusRect,
   type OverlayActionCommand,
 } from "./focus-controller";
@@ -154,14 +155,7 @@ scene.onFrame = (anchor, creature) => {
 // ------------------------------------------------------------- dock focus
 
 function closeFinishChooser(restoreFocus = false): void {
-  const trigger = focusActions.querySelector<HTMLButtonElement>(
-    '[data-focus-action="focus.finish"]',
-  );
-  finishChooser.classList.remove("on");
-  actionDock.classList.remove("choosing");
-  finishChooser.hidden = true;
-  finishChooser.inert = true;
-  if (restoreFocus) trigger?.focus({ preventScroll: true });
+  focusPresentation.closeFinishChooser(restoreFocus);
 }
 
 function syncDockVisibility(): void {
@@ -316,11 +310,7 @@ window.addEventListener("keydown", (e) => {
 
 function openFinishChooser(): void {
   closeScalePopover();
-  finishChooser.hidden = false;
-  finishChooser.inert = false;
-  actionDock.classList.add("choosing");
-  finishChooser.classList.add("on");
-  reportHitbox(lastCreatureRect, true);
+  focusPresentation.openFinishChooser();
   finishChooser.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
 }
 
@@ -362,16 +352,29 @@ function renderFocusActions(): void {
   );
 }
 
-function applyFocusStatus(status: FocusStatus): void {
-  closeFinishChooser();
-  currentFocusStatus = status;
-  focusStatusError = null;
-  renderFocusChip();
-  renderFocusActions();
-  reportHitbox(lastCreatureRect, true);
-}
+const focusPresentation = createFocusPresentationController({
+  render(state, { restoreFinishFocus }) {
+    currentFocusStatus = state.status;
+    focusStatusError = state.statusError;
+    finishChooser.classList.toggle("on", state.finishChooserOpen);
+    actionDock.classList.toggle("choosing", state.finishChooserOpen);
+    finishChooser.hidden = !state.finishChooserOpen;
+    finishChooser.inert = !state.finishChooserOpen;
+    showFocusFeedback(state.feedback);
+    renderFocusChip();
+    renderFocusActions();
+    if (restoreFinishFocus && !state.finishChooserOpen) {
+      focusActions
+        .querySelector<HTMLButtonElement>('[data-focus-action="focus.finish"]')
+        ?.focus({ preventScroll: true });
+    }
+  },
+  reportHitbox: () => reportHitbox(lastCreatureRect, true),
+});
 
-const focusSnapshots = createFocusSnapshotGate(applyFocusStatus);
+const focusSnapshots = createFocusSnapshotGate((status) =>
+  focusPresentation.applySnapshot(status),
+);
 
 async function invokeFocusCommand(command: OverlayActionCommand): Promise<FocusStatus | null> {
   switch (command.type) {
@@ -406,18 +409,20 @@ async function runFocusCommand(command: OverlayActionCommand): Promise<void> {
     openFinishChooser();
     return;
   }
+  const request = focusSnapshots.beginRequest();
   focusBusy = true;
-  showFocusFeedback(null);
+  focusPresentation.clearFeedback();
   renderFocusActions();
   try {
     const next = await invokeFocusCommand(command);
-    if (next) focusSnapshots.applyAuthoritative(next);
+    if (next) focusSnapshots.applyResponse(request, next);
   } catch (error) {
-    const failure = overlayCommandFailure(error);
-    if (failure.current) focusSnapshots.applyAuthoritative(failure.current);
-    focusStatusError = failure.message;
-    showFocusFeedback(failure.message);
-    renderFocusChip();
+    presentOverlayCommandFailure(
+      focusSnapshots,
+      focusPresentation,
+      request,
+      error,
+    );
   } finally {
     focusBusy = false;
     renderFocusActions();
@@ -503,23 +508,24 @@ async function init(): Promise<void> {
         ipc.on<BuddyChanged>(EVT_BUDDY_CHANGED, (b) => applyBuddy(b.creature_id)),
         ipc.on<ModeChanged>(EVT_MODE_CHANGED, (m) => applyMode(m.mode)),
         ipc.on<FocusStatus>(EVT_FOCUS_CHANGED, (status) => {
-          focusSnapshots.applyAuthoritative(status);
+          focusSnapshots.applyEvent(status);
         }),
         ipc.on<PomodoroPresentation>(EVT_POMODORO_PRESENTATION, deliver),
       ]),
     replay: async () => {
-      const statusRead = focusSnapshots.beginRead();
+      const statusRead = focusSnapshots.beginRequest();
       const [boot] = await Promise.all([
         ipc.surfaceReady("overlay"),
         ipc
           .focusStatus()
-          .then((status) => focusSnapshots.applyRead(statusRead, status))
+          .then((status) => focusSnapshots.applyResponse(statusRead, status))
           .catch((error) => {
-            const failure = overlayCommandFailure(error);
-            if (failure.current) focusSnapshots.applyAuthoritative(failure.current);
-            focusStatusError = failure.message;
-            showFocusFeedback(failure.message);
-            renderFocusChip();
+            presentOverlayCommandFailure(
+              focusSnapshots,
+              focusPresentation,
+              statusRead,
+              error,
+            );
           }),
       ]);
       if (!boot) return [];
