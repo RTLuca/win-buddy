@@ -38,6 +38,9 @@ pub struct AppState {
     /// Generazione effimera del drag: reset e nuovi drag invalidano in modo
     /// atomico ogni salvataggio tardivo senza sporcare le impostazioni.
     pub overlay_drag_generation: AtomicU64,
+    /// Ordine di cattura degli snapshot Focus. Viene avanzato soltanto mentre
+    /// il chiamante possiede `store`, così non dipende dall'ordine degli emit.
+    pub focus_snapshot_cursor: AtomicU64,
 }
 
 impl AppState {
@@ -60,6 +63,7 @@ impl AppState {
             hitbox: Mutex::new(None),
             overlay_interactive: AtomicBool::new(false),
             overlay_drag_generation: AtomicU64::new(0),
+            focus_snapshot_cursor: AtomicU64::new(0),
         })
     }
 }

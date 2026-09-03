@@ -94,6 +94,14 @@ export function focusMutationTarget(status: FocusStatus): FocusMutationTarget | 
     : null;
 }
 
+/** Accetta soltanto snapshot catturati più tardi dal backend. */
+export function focusSnapshotIsNewer(
+  previous: FocusStatus | null,
+  next: FocusStatus,
+): boolean {
+  return previous === null || next.snapshot_cursor > previous.snapshot_cursor;
+}
+
 export function createFocusRequestSequencer(): FocusRequestSequencer {
   let statusVersion = 0;
   let historyVersion = 0;
@@ -243,6 +251,8 @@ function isFocusStatus(value: unknown): value is FocusStatus {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<FocusStatus>;
   return (
+    Number.isSafeInteger(candidate.snapshot_cursor) &&
+    (candidate.snapshot_cursor ?? -1) >= 0 &&
     (candidate.active === null || typeof candidate.active === "object") &&
     Array.isArray(candidate.allowed_actions) &&
     (candidate.transition_revision === null ||

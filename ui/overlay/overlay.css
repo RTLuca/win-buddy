@@ -433,6 +433,11 @@
     flex-wrap: wrap;
     overflow-x: visible;
   }
+
+  .scale-popover {
+    top: 4px;
+    width: calc(100% - 10px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

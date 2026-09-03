@@ -9,7 +9,7 @@
 //! Il tray e le scorciatoie girano già sull'event loop: usano gli helper
 //! sincroni `do_*`.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -142,6 +142,7 @@ pub(crate) fn allowed_actions(phase: SessionPhase) -> Vec<FocusAction> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FocusStatusDto {
+    snapshot_cursor: u64,
     active: Option<PomodoroSession>,
     effective_focus_ms: i64,
     remaining_ms: Option<i64>,
@@ -185,6 +186,7 @@ fn session_actions(session: &PomodoroSession) -> Vec<FocusAction> {
 pub(crate) fn focus_status_from_store(
     store: &Store,
     now: i64,
+    cursor: &AtomicU64,
 ) -> win_buddy_core::Result<FocusStatusDto> {
     let active = pomodoro::active_session(store, now)?;
     let effective_focus_ms = match active.as_ref() {
@@ -214,8 +216,10 @@ pub(crate) fn focus_status_from_store(
         .map(session_actions)
         .unwrap_or_else(|| vec![FocusAction::StartLast]);
     let transition_revision = active.as_ref().map(|session| session.transition_revision);
+    let snapshot_cursor = cursor.fetch_add(1, Ordering::Relaxed) + 1;
 
     Ok(FocusStatusDto {
+        snapshot_cursor,
         active,
         effective_focus_ms,
         remaining_ms,
@@ -235,10 +239,11 @@ fn focus_presets_from_store(store: &Store) -> win_buddy_core::Result<Vec<Pomodor
 fn focus_command_error_from_store(
     store: &Store,
     now: i64,
+    cursor: &AtomicU64,
     error: win_buddy_core::CoreError,
 ) -> FocusCommandError {
     let message = error.to_string();
-    let current = match focus_status_from_store(store, now) {
+    let current = match focus_status_from_store(store, now, cursor) {
         Ok(current) => current,
         Err(snapshot_error) => {
             return FocusCommandError::Internal {
@@ -273,7 +278,7 @@ fn focus_internal_error(error: win_buddy_core::CoreError) -> FocusCommandError {
 fn focus_status_dto(app: &AppHandle) -> win_buddy_core::Result<FocusStatusDto> {
     let state = app.state::<AppState>();
     let store = state.store.lock().unwrap();
-    focus_status_from_store(&store, now_ms())
+    focus_status_from_store(&store, now_ms(), &state.focus_snapshot_cursor)
 }
 
 pub(crate) fn emit_focus_changed(app: &AppHandle, status: &FocusStatusDto) {
@@ -418,8 +423,9 @@ fn do_focus_mutation(
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_focus_mutation(&store, mutation, now)
-            .map_err(|error| focus_command_error_from_store(&store, now, error))?;
+        apply_focus_mutation(&store, mutation, now).map_err(|error| {
+            focus_command_error_from_store(&store, now, &state.focus_snapshot_cursor, error)
+        })?;
     }
     touch(app);
     sync_and_emit_focus_changed(app).map_err(focus_internal_error)
@@ -637,8 +643,9 @@ pub async fn focus_start(app: AppHandle, request: StartSession) -> FocusCmdResul
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_focus_start(&store, request, now)
-            .map_err(|error| focus_command_error_from_store(&store, now, error))?;
+        apply_focus_start(&store, request, now).map_err(|error| {
+            focus_command_error_from_store(&store, now, &state.focus_snapshot_cursor, error)
+        })?;
     }
     touch(&app);
     sync_and_emit_focus_changed(&app).map_err(focus_internal_error)
@@ -682,8 +689,9 @@ pub async fn focus_start_last(app: AppHandle) -> FocusCmdResult<FocusStatusDto> 
     {
         let state = app.state::<AppState>();
         let store = state.store.lock().unwrap();
-        apply_focus_start_last(&store, now)
-            .map_err(|error| focus_command_error_from_store(&store, now, error))?;
+        apply_focus_start_last(&store, now).map_err(|error| {
+            focus_command_error_from_store(&store, now, &state.focus_snapshot_cursor, error)
+        })?;
     }
     touch(&app);
     sync_and_emit_focus_changed(&app).map_err(focus_internal_error)
@@ -1233,12 +1241,14 @@ mod tests {
     #[test]
     fn idle_focus_status_serializes_the_exact_contract() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = std::sync::atomic::AtomicU64::new(40);
 
-        let status = focus_status_from_store(&store, 42).unwrap();
+        let status = focus_status_from_store(&store, 42, &cursor).unwrap();
 
         assert_eq!(
             serde_json::to_value(status).unwrap(),
             serde_json::json!({
+                "snapshot_cursor": 41,
                 "active": null,
                 "effective_focus_ms": 0,
                 "remaining_ms": null,
@@ -1248,6 +1258,39 @@ mod tests {
                 "transition_revision": null
             })
         );
+    }
+
+    #[test]
+    fn focus_snapshots_order_start_mutation_and_legacy_close_on_one_cursor() {
+        let store = Store::open_in_memory().unwrap();
+        let cursor = std::sync::atomic::AtomicU64::new(0);
+        let started = apply_focus_start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0)
+            .unwrap()
+            .session;
+        let after_start = focus_status_from_store(&store, 0, &cursor).unwrap();
+        apply_focus_mutation(
+            &store,
+            FocusMutation::Pause {
+                session_id: started.id,
+                expected_revision: started.transition_revision,
+                reason: None,
+            },
+            MIN,
+        )
+        .unwrap();
+        let after_mutation = focus_status_from_store(&store, MIN, &cursor).unwrap();
+        apply_legacy_abort(&store, 2 * MIN).unwrap();
+        let after_legacy = focus_status_from_store(&store, 2 * MIN, &cursor).unwrap();
+
+        assert_eq!(
+            [
+                after_start.snapshot_cursor,
+                after_mutation.snapshot_cursor,
+                after_legacy.snapshot_cursor,
+            ],
+            [1, 2, 3]
+        );
+        assert!(after_legacy.active.is_none());
     }
 
     #[test]
@@ -1314,7 +1357,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0).unwrap();
 
-        let status = focus_status_from_store(&store, 5 * MIN).unwrap();
+        let status = focus_status_from_store(&store, 5 * MIN, &AtomicU64::new(0)).unwrap();
 
         assert_eq!(status.effective_focus_ms, 5 * MIN);
         assert_eq!(status.remaining_ms, Some(20 * MIN));
@@ -1328,7 +1371,7 @@ mod tests {
         let started = pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0).unwrap();
         pomodoro::pause(&store, started.session.id, 0, 10 * MIN, None).unwrap();
 
-        let status = focus_status_from_store(&store, 20 * MIN).unwrap();
+        let status = focus_status_from_store(&store, 20 * MIN, &AtomicU64::new(0)).unwrap();
 
         assert_eq!(status.effective_focus_ms, 10 * MIN);
         assert_eq!(status.remaining_ms, Some(15 * MIN));
@@ -1342,7 +1385,7 @@ mod tests {
         pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0).unwrap();
         pomodoro::tick(&store, MIN).unwrap();
 
-        let status = focus_status_from_store(&store, MIN).unwrap();
+        let status = focus_status_from_store(&store, MIN, &AtomicU64::new(0)).unwrap();
 
         assert_eq!(status.remaining_ms, Some(0));
         assert_eq!(status.overtime_ms, None);
@@ -1364,7 +1407,7 @@ mod tests {
         pomodoro::tick(&store, MIN).unwrap();
         pomodoro::start_overtime(&store, started.session.id, 1, MIN).unwrap();
 
-        let status = focus_status_from_store(&store, 3 * MIN).unwrap();
+        let status = focus_status_from_store(&store, 3 * MIN, &AtomicU64::new(0)).unwrap();
 
         assert_eq!(status.effective_focus_ms, 3 * MIN);
         assert_eq!(status.remaining_ms, None);
@@ -1377,7 +1420,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         pomodoro::start_break(&store, SessionKind::ShortBreak, 5 * MIN, 0).unwrap();
 
-        let status = focus_status_from_store(&store, MIN).unwrap();
+        let status = focus_status_from_store(&store, MIN, &AtomicU64::new(0)).unwrap();
 
         assert_eq!(
             status.allowed_actions,
@@ -1407,8 +1450,13 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, win_buddy_core::CoreError::StaleRevision));
-        let payload =
-            serde_json::to_value(focus_command_error_from_store(&store, 5 * MIN, error)).unwrap();
+        let payload = serde_json::to_value(focus_command_error_from_store(
+            &store,
+            5 * MIN,
+            &AtomicU64::new(0),
+            error,
+        ))
+        .unwrap();
         assert_eq!(payload["code"], "stale_revision");
         assert_eq!(payload["current"]["transition_revision"], 0);
         assert_eq!(payload["current"]["active"]["id"], started.session.id);
@@ -1453,8 +1501,13 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, win_buddy_core::CoreError::StaleRevision));
-        let payload =
-            serde_json::to_value(focus_command_error_from_store(&store, 3 * MIN, error)).unwrap();
+        let payload = serde_json::to_value(focus_command_error_from_store(
+            &store,
+            3 * MIN,
+            &AtomicU64::new(0),
+            error,
+        ))
+        .unwrap();
         assert_eq!(payload["code"], "stale_revision");
         assert_eq!(payload["current"]["active"]["id"], replacement.session.id);
         assert_eq!(payload["current"]["transition_revision"], 0);
@@ -1481,8 +1534,13 @@ mod tests {
         )
         .unwrap_err();
 
-        let payload =
-            serde_json::to_value(focus_command_error_from_store(&store, 5 * MIN, error)).unwrap();
+        let payload = serde_json::to_value(focus_command_error_from_store(
+            &store,
+            5 * MIN,
+            &AtomicU64::new(0),
+            error,
+        ))
+        .unwrap();
 
         assert_eq!(payload["code"], "invalid_request");
         assert_eq!(payload["current"]["active"], serde_json::Value::Null);
@@ -1549,7 +1607,7 @@ mod tests {
         }
         {
             let store = Store::open(&database.path).unwrap();
-            let paused = focus_status_from_store(&store, 10 * MIN).unwrap();
+            let paused = focus_status_from_store(&store, 10 * MIN, &AtomicU64::new(0)).unwrap();
             assert_eq!(paused.active.as_ref().unwrap().phase, SessionPhase::Paused);
             apply_focus_mutation(
                 &store,
@@ -1564,7 +1622,7 @@ mod tests {
         }
         {
             let store = Store::open(&database.path).unwrap();
-            let ready = focus_status_from_store(&store, 15 * MIN).unwrap();
+            let ready = focus_status_from_store(&store, 15 * MIN, &AtomicU64::new(0)).unwrap();
             assert_eq!(
                 ready.active.as_ref().unwrap().phase,
                 SessionPhase::ReadyToClose
@@ -1599,10 +1657,12 @@ mod tests {
             store.effective_focus_ms(session_id, 20 * MIN).unwrap(),
             15 * MIN
         );
-        assert!(focus_status_from_store(&store, 20 * MIN)
-            .unwrap()
-            .active
-            .is_none());
+        assert!(
+            focus_status_from_store(&store, 20 * MIN, &AtomicU64::new(0))
+                .unwrap()
+                .active
+                .is_none()
+        );
     }
 
     #[test]

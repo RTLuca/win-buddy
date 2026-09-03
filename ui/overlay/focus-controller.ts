@@ -39,6 +39,7 @@ export interface FocusSnapshotGate {
 
 export interface FocusSnapshotRequest {
   sequence: number;
+  snapshotCursor: number;
   sessionId: number | null;
   revision: number | null;
 }
@@ -158,6 +159,10 @@ function snapshotIdentity(status: FocusStatus | null): {
     : { sessionId: null, revision: null };
 }
 
+function snapshotCursor(status: FocusStatus | null): number {
+  return status?.snapshot_cursor ?? 0;
+}
+
 function sameIdentity(
   left: { sessionId: number | null; revision: number | null },
   right: { sessionId: number | null; revision: number | null },
@@ -165,36 +170,14 @@ function sameIdentity(
   return left.sessionId === right.sessionId && left.revision === right.revision;
 }
 
-function eventDoesNotRegress(current: FocusStatus | null, next: FocusStatus): boolean {
-  const before = snapshotIdentity(current);
-  const after = snapshotIdentity(next);
-  return (
-    before.sessionId === null ||
-    after.sessionId === null ||
-    before.sessionId !== after.sessionId ||
-    (after.revision ?? -1) >= (before.revision ?? -1)
-  );
-}
-
-function responseMatchesRequest(
-  request: FocusSnapshotRequest,
-  response: FocusStatus,
-): boolean {
-  const after = snapshotIdentity(response);
-  if (
-    request.sessionId === null ||
-    after.sessionId === null ||
-    request.sessionId !== after.sessionId
-  ) {
-    return true;
-  }
-  return (after.revision ?? -1) >= (request.revision ?? -1);
+function snapshotIsNewer(current: FocusStatus | null, next: FocusStatus): boolean {
+  return current === null || next.snapshot_cursor > current.snapshot_cursor;
 }
 
 /**
- * Serializza snapshot pull, risposte di mutazione ed eventi push. Il token
- * include l'identità osservata per non confondere due sessioni con la stessa
- * revisione; ogni evento invalida le risposte IPC già in volo.
+ * Ordina snapshot pull, risposte di mutazione ed eventi push usando il cursore
+ * assegnato dal backend mentre cattura lo stato. Il token conserva anche
+ * l'identità locale per invalidare gli errori IPC che non portano uno snapshot.
  */
 export function createFocusSnapshotGate(
   apply: (status: FocusStatus) => void,
@@ -203,24 +186,33 @@ export function createFocusSnapshotGate(
   let current: FocusStatus | null = null;
   const isCurrent = (token: FocusSnapshotRequest): boolean =>
     token.sequence === sequence &&
+    token.snapshotCursor === snapshotCursor(current) &&
     sameIdentity(token, snapshotIdentity(current));
   return {
     beginRequest() {
       const identity = snapshotIdentity(current);
-      return { sequence: ++sequence, ...identity };
+      return {
+        sequence: ++sequence,
+        snapshotCursor: snapshotCursor(current),
+        ...identity,
+      };
     },
     isCurrent,
     applyResponse(token, status) {
-      if (!isCurrent(token)) return false;
+      if (
+        status.snapshot_cursor <= token.snapshotCursor ||
+        !snapshotIsNewer(current, status)
+      ) {
+        return false;
+      }
       sequence += 1;
-      if (!responseMatchesRequest(token, status)) return false;
       current = status;
       apply(status);
       return true;
     },
     applyEvent(status) {
+      if (!snapshotIsNewer(current, status)) return false;
       sequence += 1;
-      if (!eventDoesNotRegress(current, status)) return false;
       current = status;
       apply(status);
       return true;
@@ -307,6 +299,8 @@ function isFocusStatus(value: unknown): value is FocusStatus {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<FocusStatus>;
   return (
+    Number.isSafeInteger(candidate.snapshot_cursor) &&
+    (candidate.snapshot_cursor ?? -1) >= 0 &&
     (candidate.active === null || typeof candidate.active === "object") &&
     Array.isArray(candidate.allowed_actions) &&
     (candidate.transition_revision === null ||

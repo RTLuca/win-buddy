@@ -222,6 +222,7 @@ export interface PomodoroPreset {
 }
 
 export interface FocusStatus {
+  snapshot_cursor: number;
   active: PomodoroSession | null;
   effective_focus_ms: number;
   remaining_ms: number | null;

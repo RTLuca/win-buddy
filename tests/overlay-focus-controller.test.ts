@@ -24,6 +24,7 @@ function status(
   allowedActions: FocusAction[],
   id = 19,
   revision = 7,
+  snapshotCursor = 1,
 ): FocusStatus {
   const active: PomodoroSession = {
     id,
@@ -48,6 +49,7 @@ function status(
     label: "Chiudere il brief",
   };
   return {
+    snapshot_cursor: snapshotCursor,
     active,
     effective_focus_ms: 0,
     remaining_ms: 60_000,
@@ -58,8 +60,9 @@ function status(
   };
 }
 
-function idleStatus(): FocusStatus {
+function idleStatus(snapshotCursor = 1): FocusStatus {
   return {
+    snapshot_cursor: snapshotCursor,
     active: null,
     effective_focus_ms: 60_000,
     remaining_ms: null,
@@ -126,11 +129,11 @@ test("a focus event invalidates a late initial status read", () => {
   const applied: FocusStatus[] = [];
   const gate = createFocusSnapshotGate((snapshot) => applied.push(snapshot));
   const initial = gate.beginRequest();
-  const event = status("focus", ["focus.resume"], 19, 8);
+  const event = status("focus", ["focus.resume"], 19, 8, 2);
   event.active!.phase = "paused";
 
   gate.applyEvent(event);
-  gate.applyResponse(initial, status("focus", ["focus.pause"]));
+  gate.applyResponse(initial, status("focus", ["focus.pause"], 19, 7, 1));
 
   assert.deepEqual(applied, [event]);
 });
@@ -138,9 +141,9 @@ test("a focus event invalidates a late initial status read", () => {
 test("a late mutation response cannot replace a newer cross-session event", () => {
   const applied: FocusStatus[] = [];
   const gate = createFocusSnapshotGate((snapshot) => applied.push(snapshot));
-  const firstSession = status("focus", ["focus.pause"], 19, 7);
-  const nextSession = status("short_break", ["break.skip"], 20, 0);
-  const oldResponse = status("focus", ["focus.resume"], 19, 8);
+  const firstSession = status("focus", ["focus.pause"], 19, 7, 1);
+  const nextSession = status("short_break", ["break.skip"], 20, 0, 3);
+  const oldResponse = status("focus", ["focus.resume"], 19, 8, 2);
 
   gate.applyEvent(firstSession);
   const mutation = gate.beginRequest();
@@ -153,22 +156,34 @@ test("a late mutation response cannot replace a newer cross-session event", () =
 test("request sequencing survives an idle-active-idle ABA change", () => {
   const applied: FocusStatus[] = [];
   const gate = createFocusSnapshotGate((snapshot) => applied.push(snapshot));
-  const idle = idleStatus();
-  const started = status("focus", ["focus.pause"], 20, 0);
+  const idle = idleStatus(1);
+  const started = status("focus", ["focus.pause"], 20, 0, 2);
+  const closed = idleStatus(3);
   gate.applyEvent(idle);
   const startRequest = gate.beginRequest();
   gate.applyEvent(started);
-  gate.applyEvent(idle);
+  gate.applyEvent(closed);
 
   assert.equal(gate.applyResponse(startRequest, started), false);
-  assert.deepEqual(applied, [idle, started, idle]);
+  assert.deepEqual(applied, [idle, started, closed]);
+});
+
+test("a delayed idle event cannot replace a newer active snapshot", () => {
+  const applied: FocusStatus[] = [];
+  const gate = createFocusSnapshotGate((snapshot) => applied.push(snapshot));
+  const active = status("short_break", ["break.skip"], 20, 0, 4);
+  const delayedIdle = idleStatus(3);
+
+  assert.equal(gate.applyEvent(active), true);
+  assert.equal(gate.applyEvent(delayedIdle), false);
+  assert.deepEqual(applied, [active]);
 });
 
 test("a current finish response may close the captured active session", () => {
   const applied: FocusStatus[] = [];
   const gate = createFocusSnapshotGate((snapshot) => applied.push(snapshot));
-  const running = status("focus", ["focus.finish"]);
-  const idle = idleStatus();
+  const running = status("focus", ["focus.finish"], 19, 7, 1);
+  const idle = idleStatus(2);
   gate.applyEvent(running);
   const finish = gate.beginRequest();
 
@@ -179,9 +194,9 @@ test("a current finish response may close the captured active session", () => {
 test("an event cannot regress the revision of the same focus session", () => {
   const applied: FocusStatus[] = [];
   const gate = createFocusSnapshotGate((snapshot) => applied.push(snapshot));
-  const newer = status("focus", ["focus.resume"], 19, 8);
+  const newer = status("focus", ["focus.resume"], 19, 8, 2);
   newer.active!.phase = "paused";
-  const older = status("focus", ["focus.pause"], 19, 7);
+  const older = status("focus", ["focus.pause"], 19, 7, 1);
 
   assert.equal(gate.applyEvent(newer), true);
   assert.equal(gate.applyEvent(older), false);
@@ -228,9 +243,9 @@ test("a late error without a snapshot is not shown after a newer event", () => {
   const gate = createFocusSnapshotGate((snapshot) =>
     controller.applySnapshot(snapshot),
   );
-  gate.applyEvent(status("focus", ["focus.pause"], 19, 7));
+  gate.applyEvent(status("focus", ["focus.pause"], 19, 7, 1));
   const mutation = gate.beginRequest();
-  const newer = status("short_break", ["break.skip"], 20, 0);
+  const newer = status("short_break", ["break.skip"], 20, 0, 2);
   gate.applyEvent(newer);
 
   assert.equal(
@@ -254,9 +269,9 @@ test("a current typed stale response may reveal a replacement session", () => {
   const gate = createFocusSnapshotGate((snapshot) =>
     controller.applySnapshot(snapshot),
   );
-  gate.applyEvent(status("focus", ["focus.pause"], 19, 7));
+  gate.applyEvent(status("focus", ["focus.pause"], 19, 7, 1));
   const mutation = gate.beginRequest();
-  const replacement = status("short_break", ["break.skip"], 20, 0);
+  const replacement = status("short_break", ["break.skip"], 20, 0, 2);
 
   assert.equal(
     presentOverlayCommandFailure(gate, controller, mutation, {

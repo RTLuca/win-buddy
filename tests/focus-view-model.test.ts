@@ -52,6 +52,7 @@ function fixture(
   };
 
   return {
+    snapshot_cursor: 1,
     active,
     effective_focus_ms: 0,
     remaining_ms: null,
@@ -74,6 +75,7 @@ function breakFixture(
 
 test("an idle status has a ready label, no clock, and the quick-start action", () => {
   const status: FocusStatus = {
+    snapshot_cursor: 1,
     active: null,
     effective_focus_ms: 0,
     remaining_ms: null,
@@ -232,6 +234,7 @@ test("every semantic action has a visible and accessible label", () => {
 
 test("the persistent chip composes every approved phase without duplicate segments", () => {
   const idle: FocusStatus = {
+    snapshot_cursor: 1,
     active: null,
     effective_focus_ms: 0,
     remaining_ms: null,

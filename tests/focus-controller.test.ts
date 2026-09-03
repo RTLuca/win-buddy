@@ -11,6 +11,7 @@ import {
   focusMutationTarget,
   focusPhaseHeading,
   focusChoicesAfterSnapshot,
+  focusSnapshotIsNewer,
   historySummary,
   panelState,
   presetTimingLabel,
@@ -58,9 +59,10 @@ function session(patch: Partial<PomodoroSession> = {}): PomodoroSession {
   };
 }
 
-function status(phase: SessionPhase | null): FocusStatus {
+function status(phase: SessionPhase | null, snapshotCursor = 1): FocusStatus {
   if (phase === null) {
     return {
+      snapshot_cursor: snapshotCursor,
       active: null,
       effective_focus_ms: 0,
       remaining_ms: null,
@@ -72,6 +74,7 @@ function status(phase: SessionPhase | null): FocusStatus {
   }
   const active = session({ phase });
   return {
+    snapshot_cursor: snapshotCursor,
     active,
     effective_focus_ms: 0,
     remaining_ms: phase === "overtime" ? null : MINUTE,
@@ -214,6 +217,14 @@ test("an authoritative event supersedes in-flight status and history responses",
 
   assert.equal(sequencing.isCurrentStatus(statusRequest), false);
   assert.equal(sequencing.isCurrentHistory(historyRequest), false);
+});
+
+test("the panel rejects a delayed idle snapshot from an older backend cursor", () => {
+  const current = status("running", 12);
+  const delayedIdle = status(null, 11);
+
+  assert.equal(focusSnapshotIsNewer(current, delayedIdle), false);
+  assert.equal(focusSnapshotIsNewer(delayedIdle, current), true);
 });
 
 test("a newer request supersedes only the older response in the same stream", () => {

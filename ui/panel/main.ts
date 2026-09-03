@@ -29,6 +29,7 @@ import {
   focusCommandFailure,
   focusMutationTarget,
   focusPhaseHeading,
+  focusSnapshotIsNewer,
   historySummary,
   panelState,
   presetTimingLabel,
@@ -540,6 +541,7 @@ function finishFocus(outcome: FocusFinishOutcome, reason?: string | null): Promi
 
 async function runFocusMutation(operation: () => Promise<FocusStatus>): Promise<void> {
   if (focusBusy) return;
+  const requestCursor = currentFocusStatus?.snapshot_cursor ?? 0;
   focusBusy = true;
   focusActionError = null;
   focusRequests.authoritativeSnapshotArrived();
@@ -549,12 +551,13 @@ async function runFocusMutation(operation: () => Promise<FocusStatus>): Promise<
     applyAuthoritativeFocusStatus(next);
   } catch (error) {
     const failure = focusCommandFailure(error);
-    if (failure.current) {
-      applyAuthoritativeFocusStatus(failure.current);
-    } else {
+    const errorIsCurrent = failure.current
+      ? applyAuthoritativeFocusStatus(failure.current)
+      : (currentFocusStatus?.snapshot_cursor ?? 0) === requestCursor;
+    if (!failure.current && errorIsCurrent) {
       void loadFocusHistory();
     }
-    focusActionError = failure.message;
+    if (errorIsCurrent) focusActionError = failure.message;
   } finally {
     focusBusy = false;
     renderFocusPrepare();
@@ -585,7 +588,8 @@ focusPrepareForm.addEventListener("submit", (event) => {
   }
 });
 
-function applyFocusStatus(status: FocusStatus): void {
+function applyFocusStatus(status: FocusStatus): boolean {
+  if (!focusSnapshotIsNewer(currentFocusStatus, status)) return false;
   const currentChoices = {
     durationChoicesOpen,
     finishChoicesOpen,
@@ -598,14 +602,17 @@ function applyFocusStatus(status: FocusStatus): void {
   if (nextChoices !== currentChoices) zeroRefreshLatch = null;
   currentFocusStatus = status;
   focusStatusError = null;
+  focusActionError = null;
   renderFocusPrepare();
   tickFocusClock();
+  return true;
 }
 
-function applyAuthoritativeFocusStatus(status: FocusStatus): void {
+function applyAuthoritativeFocusStatus(status: FocusStatus): boolean {
+  if (!applyFocusStatus(status)) return false;
   focusRequests.authoritativeSnapshotArrived();
-  applyFocusStatus(status);
   void loadFocusHistory();
+  return true;
 }
 
 function tickFocusClock(): void {
@@ -623,7 +630,7 @@ async function loadFocusStatus(): Promise<void> {
   const request = focusRequests.beginStatus();
   try {
     const status = await ipc.focusStatus();
-    if (focusRequests.isCurrentStatus(request)) applyFocusStatus(status);
+    applyFocusStatus(status);
   } catch (error) {
     if (!focusRequests.isCurrentStatus(request)) return;
     focusStatusError = focusCommandFailure(error).message;

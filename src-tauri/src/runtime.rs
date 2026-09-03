@@ -2,7 +2,7 @@
 //! watcher: divario da sospensione, DND automatico, hit-test del cursore,
 //! spegnimento dell'overlay inattivo.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
@@ -105,10 +105,11 @@ pub fn do_tick(app: &AppHandle) {
     let (out, pomo_events, focus_snapshot) = {
         let store = state.store.lock().unwrap();
         let out = scheduler::tick(&store, now);
-        let focus_snapshot = apply_pomodoro_tick(&store, now).unwrap_or_else(|error| {
-            log::error!("tick Pomodoro fallito: {error}");
-            None
-        });
+        let focus_snapshot = apply_pomodoro_tick(&store, now, &state.focus_snapshot_cursor)
+            .unwrap_or_else(|error| {
+                log::error!("tick Pomodoro fallito: {error}");
+                None
+            });
         let events = match store.pending_presentation_events() {
             Ok(events) => events,
             Err(error) => {
@@ -150,11 +151,18 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
     let (out, pomo_events, focus_snapshot) = {
         let store = state.store.lock().unwrap();
         let cfg = PomodoroConfig::load(&store);
-        let focus_snapshot = apply_pomodoro_recovery(&store, now, last_alive, day_start_ms(), &cfg)
-            .unwrap_or_else(|error| {
-                log::error!("recupero Pomodoro fallito: {error}");
-                None
-            });
+        let focus_snapshot = apply_pomodoro_recovery(
+            &store,
+            now,
+            last_alive,
+            day_start_ms(),
+            &cfg,
+            &state.focus_snapshot_cursor,
+        )
+        .unwrap_or_else(|error| {
+            log::error!("recupero Pomodoro fallito: {error}");
+            None
+        });
         let out = scheduler::tick(&store, now).unwrap_or_else(|_| scheduler::TickOutcome {
             newly_fired: vec![],
             arm_timer_ms: None,
@@ -185,10 +193,11 @@ pub fn recovery(app: &AppHandle, last_alive: i64) {
 fn apply_pomodoro_tick(
     store: &Store,
     now: i64,
+    cursor: &AtomicU64,
 ) -> win_buddy_core::Result<Option<commands::FocusStatusDto>> {
     let changed = !pomodoro::tick(store, now)?.is_empty();
     changed
-        .then(|| commands::focus_status_from_store(store, now))
+        .then(|| commands::focus_status_from_store(store, now, cursor))
         .transpose()
 }
 
@@ -198,13 +207,14 @@ fn apply_pomodoro_recovery(
     last_alive: i64,
     day_start: i64,
     config: &PomodoroConfig,
+    cursor: &AtomicU64,
 ) -> win_buddy_core::Result<Option<commands::FocusStatusDto>> {
     let before = store.open_session()?;
     pomodoro::resolve_open(store, now, last_alive, day_start, config)?;
     let after = store.open_session()?;
     let changed = before != after;
     changed
-        .then(|| commands::focus_status_from_store(store, now))
+        .then(|| commands::focus_status_from_store(store, now, cursor))
         .transpose()
 }
 
@@ -342,34 +352,42 @@ mod tests {
     #[test]
     fn focus_deadline_requests_one_focus_changed_snapshot() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(6);
         let started = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
             .unwrap()
             .session;
 
         let snapshot =
-            serde_json::to_value(apply_pomodoro_tick(&store, MIN).unwrap().unwrap()).unwrap();
+            serde_json::to_value(apply_pomodoro_tick(&store, MIN, &cursor).unwrap().unwrap())
+                .unwrap();
+        assert_eq!(snapshot["snapshot_cursor"], 7);
         assert_eq!(snapshot["active"]["phase"], "ready_to_close");
         assert_eq!(snapshot["transition_revision"], 1);
         let ready = store.get_session(started.id).unwrap().unwrap();
         assert_eq!(ready.phase, win_buddy_core::SessionPhase::ReadyToClose);
         assert_eq!(ready.transition_revision, 1);
-        assert!(apply_pomodoro_tick(&store, MIN + 1).unwrap().is_none());
+        assert!(apply_pomodoro_tick(&store, MIN + 1, &cursor)
+            .unwrap()
+            .is_none());
+        assert_eq!(cursor.load(Ordering::Relaxed), 7);
     }
 
     #[test]
     fn stale_recovery_that_makes_focus_reviewable_requests_focus_changed() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(8);
         let started = pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0)
             .unwrap()
             .session;
         let cfg = PomodoroConfig::load(&store);
 
         let snapshot = serde_json::to_value(
-            apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg)
+            apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg, &cursor)
                 .unwrap()
                 .unwrap(),
         )
         .unwrap();
+        assert_eq!(snapshot["snapshot_cursor"], 9);
         assert_eq!(snapshot["active"]["phase"], "ready_to_close");
         assert_eq!(snapshot["transition_revision"], 1);
 
@@ -385,15 +403,17 @@ mod tests {
     #[test]
     fn stale_recovery_before_deadline_does_not_request_focus_changed_on_retry() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
         let started = pomodoro::start(&store, StartSession::focus(1, "Spec", 25 * MIN), 0)
             .unwrap()
             .session;
         let cfg = PomodoroConfig::load(&store);
 
-        let first = apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg).unwrap();
-        let second = apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg).unwrap();
+        let first = apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg, &cursor).unwrap();
+        let second = apply_pomodoro_recovery(&store, 10 * MIN, 0, 0, &cfg, &cursor).unwrap();
 
         assert_eq!([first.is_some(), second.is_some()], [false, false]);
+        assert_eq!(cursor.load(Ordering::Relaxed), 0);
         assert_eq!(store.open_session().unwrap(), Some(started));
         let pending = store.pending_presentation_events().unwrap();
         assert_eq!(pending.len(), 1);
@@ -406,6 +426,7 @@ mod tests {
     #[test]
     fn stale_ready_recovery_enqueues_presentation_without_focus_changed() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
         pomodoro::start(&store, StartSession::focus(1, "Spec", MIN), 0).unwrap();
         let ready = pomodoro::tick(&store, MIN).unwrap().remove(0);
         store
@@ -413,9 +434,10 @@ mod tests {
             .unwrap();
         let cfg = PomodoroConfig::load(&store);
 
-        let snapshot = apply_pomodoro_recovery(&store, 20 * MIN, MIN, 0, &cfg).unwrap();
+        let snapshot = apply_pomodoro_recovery(&store, 20 * MIN, MIN, 0, &cfg, &cursor).unwrap();
 
         assert!(snapshot.is_none());
+        assert_eq!(cursor.load(Ordering::Relaxed), 0);
         let pending = store.pending_presentation_events().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(
@@ -427,10 +449,13 @@ mod tests {
     #[test]
     fn natural_break_deadline_requests_one_focus_changed_and_keeps_return_prompt() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
         pomodoro::start_break(&store, win_buddy_core::SessionKind::ShortBreak, MIN, 0).unwrap();
 
         let snapshot =
-            serde_json::to_value(apply_pomodoro_tick(&store, MIN).unwrap().unwrap()).unwrap();
+            serde_json::to_value(apply_pomodoro_tick(&store, MIN, &cursor).unwrap().unwrap())
+                .unwrap();
+        assert_eq!(snapshot["snapshot_cursor"], 1);
         assert_eq!(snapshot["active"], serde_json::Value::Null);
         assert_eq!(snapshot["transition_revision"], serde_json::Value::Null);
         assert!(store.open_session().unwrap().is_none());
@@ -438,21 +463,25 @@ mod tests {
             store.pending_presentation_events().unwrap()[0].kind,
             win_buddy_core::pomodoro::EventKind::ReturnPrompt
         );
-        assert!(apply_pomodoro_tick(&store, MIN + 1).unwrap().is_none());
+        assert!(apply_pomodoro_tick(&store, MIN + 1, &cursor)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn recent_break_recovery_requests_focus_changed_when_it_closes_the_break() {
         let store = Store::open_in_memory().unwrap();
+        let cursor = AtomicU64::new(0);
         pomodoro::start_break(&store, win_buddy_core::SessionKind::ShortBreak, MIN, 0).unwrap();
         let cfg = PomodoroConfig::load(&store);
 
         let snapshot = serde_json::to_value(
-            apply_pomodoro_recovery(&store, MIN + 1, MIN, 0, &cfg)
+            apply_pomodoro_recovery(&store, MIN + 1, MIN, 0, &cfg, &cursor)
                 .unwrap()
                 .unwrap(),
         )
         .unwrap();
+        assert_eq!(snapshot["snapshot_cursor"], 1);
         assert_eq!(snapshot["active"], serde_json::Value::Null);
         assert_eq!(snapshot["transition_revision"], serde_json::Value::Null);
 
