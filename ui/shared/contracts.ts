@@ -73,6 +73,7 @@ export const EVT_MODE_CHANGED = "mode:changed";
 export const EVT_NOTES_CHANGED = "notes:changed";
 export const EVT_POMODORO_PRESENTATION = "pomodoro:presentation";
 export const EVT_FOCUS_CHANGED = "focus:changed";
+export const EVT_FOCUS_FINISH_INTENT = "focus:finish-intent";
 
 export type ActiveSessionPhase = "running" | "paused" | "ready_to_close" | "overtime";
 
@@ -231,6 +232,15 @@ export interface FocusStatus {
   pending_captures: number;
   transition_revision: number | null;
 }
+
+export type FocusShortcutSettingKey =
+  | "shortcut.focus.start_last"
+  | "shortcut.focus.pause_resume"
+  | "shortcut.focus.extend_5"
+  | "shortcut.focus.capture"
+  | "shortcut.focus.finish";
+
+export type FocusShortcutSettings = Record<FocusShortcutSettingKey, string>;
 
 export type FocusCommandError =
   | { code: "stale_revision"; message: string; current: FocusStatus }

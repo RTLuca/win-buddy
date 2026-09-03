@@ -152,6 +152,24 @@ pub struct FocusStatusDto {
     transition_revision: Option<i64>,
 }
 
+impl FocusStatusDto {
+    pub(crate) fn allowed_actions(&self) -> &[FocusAction] {
+        &self.allowed_actions
+    }
+
+    pub(crate) fn active_is_focus(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|session| session.kind == SessionKind::Focus)
+    }
+
+    pub(crate) fn active_is_break(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|session| session.kind != SessionKind::Focus)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum FocusCommandError {
@@ -281,10 +299,15 @@ fn focus_status_dto(app: &AppHandle) -> win_buddy_core::Result<FocusStatusDto> {
     focus_status_from_store(&store, now_ms(), &state.focus_snapshot_cursor)
 }
 
+pub(crate) fn focus_shell_status(app: &AppHandle) -> FocusCmdResult<FocusStatusDto> {
+    focus_status_dto(app).map_err(focus_internal_error)
+}
+
 pub(crate) fn emit_focus_changed(app: &AppHandle, status: &FocusStatusDto) {
     if let Err(error) = app.emit(EVT_FOCUS_CHANGED, status) {
         log::warn!("emissione {EVT_FOCUS_CHANGED} fallita: {error}");
     }
+    crate::tray::rebuild_menu_state(app);
 }
 
 fn sync_and_emit_focus_changed(app: &AppHandle) -> win_buddy_core::Result<FocusStatusDto> {
@@ -429,6 +452,184 @@ fn do_focus_mutation(
     }
     touch(app);
     sync_and_emit_focus_changed(app).map_err(focus_internal_error)
+}
+
+fn unavailable_focus_action(message: &str, current: FocusStatusDto) -> FocusCommandError {
+    FocusCommandError::InvalidRequest {
+        message: message.to_string(),
+        current: Box::new(current),
+    }
+}
+
+fn shell_action_rejection(
+    current: &FocusStatusDto,
+    action: FocusAction,
+    outcome: Option<FocusFinishOutcome>,
+) -> Option<&'static str> {
+    if !current.allowed_actions.contains(&action) {
+        return Some("azione Focus non disponibile nello stato corrente");
+    }
+    if action == FocusAction::StartBreak {
+        return Some("avvio pausa non disponibile dalla shell");
+    }
+    if action == FocusAction::Finish && outcome.is_none() {
+        return Some("scegli un esito esplicito per concludere la sessione");
+    }
+    None
+}
+
+fn shell_session_target(current: &FocusStatusDto) -> Result<(i64, i64), &'static str> {
+    current
+        .active
+        .as_ref()
+        .map(|session| (session.id, session.transition_revision))
+        .ok_or("sessione Focus non disponibile nello stato corrente")
+}
+
+fn dispatch_focus_action_with_outcome(
+    app: &AppHandle,
+    action: FocusAction,
+    outcome: Option<FocusFinishOutcome>,
+) -> FocusCmdResult<FocusStatusDto> {
+    let now = now_ms();
+    let unchanged = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        let current = focus_status_from_store(&store, now, &state.focus_snapshot_cursor)
+            .map_err(focus_internal_error)?;
+        if let Some(message) = shell_action_rejection(&current, action, outcome) {
+            return Err(unavailable_focus_action(message, current));
+        }
+        if action == FocusAction::Capture {
+            Some(current)
+        } else {
+            let result = match action {
+                FocusAction::StartLast => apply_focus_start_last(&store, now),
+                FocusAction::Pause => {
+                    let (session_id, expected_revision) = shell_session_target(&current)
+                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+                    apply_focus_mutation(
+                        &store,
+                        FocusMutation::Pause {
+                            session_id,
+                            expected_revision,
+                            reason: None,
+                        },
+                        now,
+                    )
+                }
+                FocusAction::Resume => {
+                    let (session_id, expected_revision) = shell_session_target(&current)
+                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+                    apply_focus_mutation(
+                        &store,
+                        FocusMutation::Resume {
+                            session_id,
+                            expected_revision,
+                        },
+                        now,
+                    )
+                }
+                FocusAction::Extend5 => {
+                    let (session_id, expected_revision) = shell_session_target(&current)
+                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+                    apply_focus_mutation(
+                        &store,
+                        FocusMutation::Adjust {
+                            session_id,
+                            expected_revision,
+                            delta_ms: 5 * 60_000,
+                        },
+                        now,
+                    )
+                }
+                FocusAction::Overtime => {
+                    let (session_id, expected_revision) = shell_session_target(&current)
+                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+                    apply_focus_mutation(
+                        &store,
+                        FocusMutation::Overtime {
+                            session_id,
+                            expected_revision,
+                        },
+                        now,
+                    )
+                }
+                FocusAction::SkipBreak => {
+                    let (session_id, expected_revision) = shell_session_target(&current)
+                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+                    apply_focus_mutation(
+                        &store,
+                        FocusMutation::Finish {
+                            session_id,
+                            expected_revision,
+                            outcome: SessionOutcome::Partial,
+                            interruption_reason: None,
+                        },
+                        now,
+                    )
+                }
+                FocusAction::Finish => {
+                    let Some(outcome) = outcome else {
+                        return Err(unavailable_focus_action(
+                            "scegli un esito esplicito per concludere la sessione",
+                            current,
+                        ));
+                    };
+                    let (session_id, expected_revision) = shell_session_target(&current)
+                        .map_err(|message| unavailable_focus_action(message, current.clone()))?;
+                    apply_focus_mutation(
+                        &store,
+                        FocusMutation::Finish {
+                            session_id,
+                            expected_revision,
+                            outcome: outcome.into(),
+                            interruption_reason: None,
+                        },
+                        now,
+                    )
+                }
+                FocusAction::StartBreak => {
+                    return Err(unavailable_focus_action(
+                        "avvio pausa non disponibile dalla shell",
+                        current,
+                    ));
+                }
+                FocusAction::Capture => {
+                    return Err(unavailable_focus_action(
+                        "cattura Focus non disponibile dalla shell",
+                        current,
+                    ));
+                }
+            };
+            result.map_err(|error| {
+                focus_command_error_from_store(&store, now, &state.focus_snapshot_cursor, error)
+            })?;
+            None
+        }
+    };
+    touch(app);
+    if let Some(status) = unchanged {
+        surfaces::open_capture(app);
+        return Ok(status);
+    }
+    sync_and_emit_focus_changed(app).map_err(focus_internal_error)
+}
+
+/// Punto unico delle azioni shell senza parametri. Lo stato viene riletto
+/// immediatamente prima della mutazione, inclusi id e revisione CAS.
+pub(crate) fn dispatch_focus_action(
+    app: &AppHandle,
+    action: FocusAction,
+) -> FocusCmdResult<FocusStatusDto> {
+    dispatch_focus_action_with_outcome(app, action, None)
+}
+
+pub(crate) fn dispatch_focus_finish(
+    app: &AppHandle,
+    outcome: FocusFinishOutcome,
+) -> FocusCmdResult<FocusStatusDto> {
+    dispatch_focus_action_with_outcome(app, FocusAction::Finish, Some(outcome))
 }
 
 #[derive(Serialize)]
@@ -1257,6 +1458,18 @@ mod tests {
                 "pending_captures": 0,
                 "transition_revision": null
             })
+        );
+    }
+
+    #[test]
+    fn shell_dispatch_rejects_unimplemented_start_break_without_panicking() {
+        let store = Store::open_in_memory().unwrap();
+        let mut status = focus_status_from_store(&store, 0, &AtomicU64::new(0)).unwrap();
+        status.allowed_actions = vec![FocusAction::StartBreak];
+
+        assert_eq!(
+            shell_action_rejection(&status, FocusAction::StartBreak, None),
+            Some("avvio pausa non disponibile dalla shell")
         );
     }
 

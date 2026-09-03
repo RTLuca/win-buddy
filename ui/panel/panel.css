@@ -609,6 +609,66 @@ button:disabled {
 
 /* --------------------------------------------------------- impostazioni */
 
+.shortcut-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.shortcut-hint,
+.shortcut-actions {
+  grid-column: 1 / -1;
+}
+
+.shortcut-hint {
+  margin: 0 0 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.shortcut-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.shortcut-field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: #ede8f7;
+  font: 11px/1.2 var(--mono);
+}
+
+.shortcut-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.shortcut-status {
+  color: var(--moss);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.shortcut-status.error {
+  color: var(--amber);
+}
+
 .creatures {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -789,6 +849,20 @@ select:focus-visible {
 
   .focus-details > div {
     grid-template-columns: 82px minmax(0, 1fr);
+  }
+
+  .shortcut-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcut-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .shortcut-actions button {
+    width: 100%;
+    scroll-margin-block-end: 12px;
   }
 }
 

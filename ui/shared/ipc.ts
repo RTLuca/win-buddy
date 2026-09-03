@@ -9,6 +9,7 @@ import type {
   CapturePreview,
   DndStatus,
   FocusFinishOutcome,
+  FocusShortcutSettings,
   FocusStatus,
   MonitorInfo,
   NoteView,
@@ -99,6 +100,11 @@ export const pomodoroPresentationAck = (id: number) =>
 export const settingsAll = () => invoke<Record<string, string>>("settings_all");
 export const settingSet = (key: string, value: string) =>
   invoke<void>("setting_set", { key, value });
+export const focusShortcutSettings = () =>
+  invoke<FocusShortcutSettings>("focus_shortcut_settings");
+export const focusShortcutSettingsApply = (settings: FocusShortcutSettings) =>
+  invoke<FocusShortcutSettings>("focus_shortcut_settings_apply", { settings });
+export const focusFinishIntentTake = () => invoke<boolean>("focus_finish_intent_take");
 
 export const dndStatus = () => invoke<DndStatus>("dnd_status");
 export const dndSetManual = (hidden: boolean) => invoke<DndStatus>("dnd_set_manual", { hidden });

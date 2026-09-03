@@ -6,12 +6,15 @@
 import {
   CREATURE_META,
   EVT_FOCUS_CHANGED,
+  EVT_FOCUS_FINISH_INTENT,
   EVT_NOTES_CHANGED,
   KIND_LABEL,
   OUTCOME_LABEL,
   fmtCountdown,
   type FocusAction,
   type FocusFinishOutcome,
+  type FocusShortcutSettingKey,
+  type FocusShortcutSettings,
   type FocusStatus,
   type NoteView,
   type PomodoroPreset,
@@ -37,19 +40,29 @@ import {
   type FocusPane,
   type FocusSnapshotSource,
 } from "./focus-controller";
+import {
+  createShortcutSettingsController,
+  startFinishIntentBridge,
+} from "./shortcut-controller";
 
 // ------------------------------------------------------------------ tabs
 
 const tabs = document.getElementById("tabs")!;
-tabs.addEventListener("click", (e) => {
-  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-tab]");
+function setMainTab(name: string, moveFocus = false): void {
+  const btn = tabs.querySelector<HTMLButtonElement>(`button[data-tab="${name}"]`);
   if (!btn) return;
   for (const b of tabs.querySelectorAll("button")) b.classList.toggle("on", b === btn);
   for (const s of document.querySelectorAll<HTMLElement>(".tab")) {
-    s.classList.toggle("on", s.id === `tab-${btn.dataset.tab}`);
+    s.classList.toggle("on", s.id === `tab-${name}`);
   }
-  if (btn.dataset.tab === "archive") void renderArchive();
-  if (btn.dataset.tab === "focus") void refreshFocusSurface();
+  if (moveFocus) btn.focus();
+  if (name === "archive") void renderArchive();
+  if (name === "focus") void refreshFocusSurface();
+}
+
+tabs.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-tab]");
+  if (btn?.dataset.tab) setMainTab(btn.dataset.tab);
 });
 
 // ------------------------------------------------------------ note aperte
@@ -529,6 +542,26 @@ function renderFinishChoices(): void {
   }
 }
 
+async function consumeFinishShortcutIntent(): Promise<void> {
+  if (!(await ipc.focusFinishIntentTake())) return;
+  setMainTab("focus");
+  setFocusPane("prepare");
+  await loadFocusStatus();
+  if (
+    currentFocusStatus?.active?.kind !== "focus" ||
+    !currentFocusStatus.allowed_actions.includes("focus.finish")
+  ) {
+    return;
+  }
+  finishChoicesOpen = true;
+  durationChoicesOpen = false;
+  interruptionReasonOpen = false;
+  renderFocusPrepare();
+  window.requestAnimationFrame(() => {
+    document.querySelector<HTMLButtonElement>(".focus-finish button")?.focus();
+  });
+}
+
 function currentMutationTarget() {
   return currentFocusStatus ? focusMutationTarget(currentFocusStatus) : null;
 }
@@ -821,6 +854,52 @@ function formatDate(epochMs: number): string {
 
 // ----------------------------------------------------------- impostazioni
 
+const shortcutSettings = document.getElementById("shortcutSettings") as HTMLFormElement;
+const shortcutSave = document.getElementById("shortcutSave") as HTMLButtonElement;
+const shortcutStatus = document.getElementById("shortcutStatus")!;
+const shortcutInputs: Record<FocusShortcutSettingKey, HTMLInputElement> = {
+  "shortcut.focus.start_last": document.getElementById("shortcutStartLast") as HTMLInputElement,
+  "shortcut.focus.pause_resume": document.getElementById("shortcutPauseResume") as HTMLInputElement,
+  "shortcut.focus.extend_5": document.getElementById("shortcutExtend") as HTMLInputElement,
+  "shortcut.focus.capture": document.getElementById("shortcutCapture") as HTMLInputElement,
+  "shortcut.focus.finish": document.getElementById("shortcutFinish") as HTMLInputElement,
+};
+const shortcutKeys = Object.keys(shortcutInputs) as FocusShortcutSettingKey[];
+
+function readShortcutDraft(): FocusShortcutSettings {
+  return Object.fromEntries(
+    shortcutKeys.map((key) => [key, shortcutInputs[key].value]),
+  ) as FocusShortcutSettings;
+}
+
+function writeShortcutValues(values: FocusShortcutSettings): void {
+  for (const key of shortcutKeys) shortcutInputs[key].value = values[key] ?? "";
+}
+
+const shortcutController = createShortcutSettingsController(
+  {
+    read: ipc.focusShortcutSettings,
+    apply: ipc.focusShortcutSettingsApply,
+  },
+  {
+    readDraft: readShortcutDraft,
+    writeValues: writeShortcutValues,
+    setBusy: (busy) => {
+      shortcutSave.disabled = busy;
+      for (const input of Object.values(shortcutInputs)) input.disabled = busy;
+    },
+    setStatus: (message, error) => {
+      shortcutStatus.textContent = message;
+      shortcutStatus.classList.toggle("error", error);
+    },
+  },
+);
+
+shortcutSettings.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void shortcutController.save();
+});
+
 const creaturesBox = document.getElementById("creatures")!;
 const setSober = document.getElementById("setSober") as HTMLInputElement;
 const setScale = document.getElementById("setScale") as HTMLInputElement;
@@ -969,6 +1048,7 @@ window.addEventListener("keydown", (e) => {
 
 void renderOpen();
 void renderSettings();
+void shortcutController.load();
 const focusSurfaceBootstrap = createFocusSurfaceBootstrap({
   registerListener: () =>
     ipc.on<FocusStatus>(EVT_FOCUS_CHANGED, (status) => {
@@ -977,4 +1057,8 @@ const focusSurfaceBootstrap = createFocusSurfaceBootstrap({
   loadInitialState: refreshFocusSurface,
   markSurfaceReady: () => ipc.surfaceReady("panel"),
 });
-void focusSurfaceBootstrap.start();
+void startFinishIntentBridge(
+  (handler) => ipc.on(EVT_FOCUS_FINISH_INTENT, handler),
+  () => focusSurfaceBootstrap.start(),
+  consumeFinishShortcutIntent,
+);

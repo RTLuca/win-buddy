@@ -180,6 +180,37 @@
 
     <!-- ----------------------------------------------- impostazioni -->
     <section id="tab-settings" class="tab">
+      <h3 class="section-title">Accessibilità</h3>
+      <form id="shortcutSettings" class="shortcut-settings">
+        <p class="shortcut-hint" id="shortcutHint">
+          Usa combinazioni come Ctrl+Alt+F. Lascia vuoto per disattivare.
+        </p>
+        <label class="shortcut-field">
+          <span>Avvia ultimo focus</span>
+          <input id="shortcutStartLast" type="text" value="Ctrl+Alt+F" aria-describedby="shortcutHint" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="shortcut-field">
+          <span>Pausa o riprendi</span>
+          <input id="shortcutPauseResume" type="text" value="Ctrl+Alt+P" aria-describedby="shortcutHint" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="shortcut-field">
+          <span>Aggiungi 5 minuti</span>
+          <input id="shortcutExtend" type="text" value="Ctrl+Alt+5" aria-describedby="shortcutHint" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="shortcut-field">
+          <span>Cattura rapida</span>
+          <input id="shortcutCapture" type="text" value="Ctrl+Alt+Space" aria-describedby="shortcutHint" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="shortcut-field">
+          <span>Apri scelta conclusione</span>
+          <input id="shortcutFinish" type="text" value="Ctrl+Alt+Enter" aria-describedby="shortcutHint" autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="shortcut-actions">
+          <span id="shortcutStatus" class="shortcut-status" aria-live="polite"></span>
+          <button id="shortcutSave" class="primary" type="submit">Applica scorciatoie</button>
+        </div>
+      </form>
+
       <h3 class="section-title">Creatura</h3>
       <div id="creatures" class="creatures"></div>
 

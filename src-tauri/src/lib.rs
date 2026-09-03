@@ -13,13 +13,13 @@ mod logging;
 mod platform;
 mod presenter;
 mod runtime;
+mod shortcuts;
 mod state;
 mod surfaces;
 mod tray;
 
 use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use state::AppState;
 
@@ -35,7 +35,11 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(shortcuts::handle)
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             commands::capture_preview,
             commands::capture_submit,
@@ -64,6 +68,9 @@ pub fn run() {
             commands::break_skip,
             commands::settings_all,
             commands::setting_set,
+            shortcuts::focus_shortcut_settings,
+            shortcuts::focus_shortcut_settings_apply,
+            shortcuts::focus_finish_intent_take,
             commands::monitors_list,
             commands::dnd_status,
             commands::dnd_set_manual,
@@ -98,7 +105,7 @@ pub fn run() {
                 log::info!("tray pronta");
             }
 
-            register_shortcuts(&handle);
+            shortcuts::setup(&handle);
             enable_autostart_once(&handle);
 
             // recupero all'avvio (§ 7.3): un promemoria scaduto mentre l'app
@@ -128,36 +135,6 @@ pub fn run() {
             }
         }
     });
-}
-
-/// Le scorciatoie globali sono comodità, non prerequisiti: se un'altra app
-/// tiene occupata una combinazione, si logga e si va avanti — il tray copre
-/// le stesse azioni.
-fn register_shortcuts(app: &tauri::AppHandle) {
-    // Ctrl+Alt+Spazio: cattura rapida (§ 11)
-    let r = app
-        .global_shortcut()
-        .on_shortcut("ctrl+alt+space", |app, _sc, ev| {
-            if ev.state() == ShortcutState::Pressed {
-                surfaces::open_capture(app);
-            }
-        });
-    match r {
-        Ok(()) => log::info!("scorciatoia cattura registrata (Ctrl+Alt+Spazio)"),
-        Err(e) => log::warn!("Ctrl+Alt+Spazio non registrata: {e}"),
-    }
-    // Ctrl+Alt+H: DND manuale, più veloce di qualunque euristica (§ 10.4)
-    let r = app
-        .global_shortcut()
-        .on_shortcut("ctrl+alt+h", |app, _sc, ev| {
-            if ev.state() == ShortcutState::Pressed {
-                commands::toggle_dnd(app);
-            }
-        });
-    match r {
-        Ok(()) => log::info!("scorciatoia DND registrata (Ctrl+Alt+H)"),
-        Err(e) => log::warn!("Ctrl+Alt+H non registrata: {e}"),
-    }
 }
 
 /// Avvio automatico al login (§ 2), attivato una volta sola: se l'utente
