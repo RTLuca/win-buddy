@@ -219,6 +219,38 @@ test("an authoritative event supersedes in-flight status and history responses",
   assert.equal(sequencing.isCurrentHistory(historyRequest), false);
 });
 
+test("a mutation start invalidates a status read that began before it", () => {
+  const sequencing = createFocusRequestSequencer();
+  const current = status("running", 10);
+  const request = sequencing.beginStatus();
+  const lateResponse = status("running", 11);
+
+  sequencing.beginMutation(current);
+
+  assert.equal(focusSnapshotIsNewer(current, lateResponse), true);
+  assert.equal(sequencing.isCurrentStatus(request), false);
+});
+
+test("a same-domain reread does not hide an internal mutation failure", () => {
+  const sequencing = createFocusRequestSequencer();
+  const mutation = sequencing.beginMutation(status("running", 10));
+  const reread = status("running", 11);
+
+  assert.equal(sequencing.isCurrentMutation(mutation, reread), true);
+});
+
+test("a real domain event suppresses an older mutation failure", () => {
+  const sequencing = createFocusRequestSequencer();
+  const mutation = sequencing.beginMutation(status("running", 10));
+  const changed = status("paused", 11);
+  changed.active!.transition_revision = 5;
+  changed.transition_revision = 5;
+
+  sequencing.authoritativeSnapshotArrived();
+
+  assert.equal(sequencing.isCurrentMutation(mutation, changed), false);
+});
+
 test("the panel rejects a delayed idle snapshot from an older backend cursor", () => {
   const current = status("running", 12);
   const delayedIdle = status(null, 11);

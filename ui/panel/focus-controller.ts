@@ -39,12 +39,19 @@ export interface FocusMutationTarget {
   expectedRevision: number;
 }
 
+export interface FocusMutationRequest {
+  sequence: number;
+  domainIdentity: string;
+}
+
 export interface FocusRequestSequencer {
   beginStatus(): number;
   beginHistory(): number;
+  beginMutation(status: FocusStatus | null): FocusMutationRequest;
   authoritativeSnapshotArrived(): void;
   isCurrentStatus(token: number): boolean;
   isCurrentHistory(token: number): boolean;
+  isCurrentMutation(token: FocusMutationRequest, status: FocusStatus | null): boolean;
 }
 
 export interface FocusSurfaceBootstrap {
@@ -105,15 +112,27 @@ export function focusSnapshotIsNewer(
 export function createFocusRequestSequencer(): FocusRequestSequencer {
   let statusVersion = 0;
   let historyVersion = 0;
+  let mutationVersion = 0;
   return {
     beginStatus: () => ++statusVersion,
     beginHistory: () => ++historyVersion,
+    beginMutation: (status) => {
+      statusVersion += 1;
+      historyVersion += 1;
+      return {
+        sequence: ++mutationVersion,
+        domainIdentity: focusSnapshotIdentity(status),
+      };
+    },
     authoritativeSnapshotArrived: () => {
       statusVersion += 1;
       historyVersion += 1;
     },
     isCurrentStatus: (token) => token === statusVersion,
     isCurrentHistory: (token) => token === historyVersion,
+    isCurrentMutation: (token, status) =>
+      token.sequence === mutationVersion &&
+      token.domainIdentity === focusSnapshotIdentity(status),
   };
 }
 

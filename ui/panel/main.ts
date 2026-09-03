@@ -541,10 +541,9 @@ function finishFocus(outcome: FocusFinishOutcome, reason?: string | null): Promi
 
 async function runFocusMutation(operation: () => Promise<FocusStatus>): Promise<void> {
   if (focusBusy) return;
-  const requestCursor = currentFocusStatus?.snapshot_cursor ?? 0;
+  const request = focusRequests.beginMutation(currentFocusStatus);
   focusBusy = true;
   focusActionError = null;
-  focusRequests.authoritativeSnapshotArrived();
   renderFocusPrepare();
   try {
     const next = await operation();
@@ -553,7 +552,7 @@ async function runFocusMutation(operation: () => Promise<FocusStatus>): Promise<
     const failure = focusCommandFailure(error);
     const errorIsCurrent = failure.current
       ? applyAuthoritativeFocusStatus(failure.current)
-      : (currentFocusStatus?.snapshot_cursor ?? 0) === requestCursor;
+      : focusRequests.isCurrentMutation(request, currentFocusStatus);
     if (!failure.current && errorIsCurrent) {
       void loadFocusHistory();
     }
@@ -630,7 +629,7 @@ async function loadFocusStatus(): Promise<void> {
   const request = focusRequests.beginStatus();
   try {
     const status = await ipc.focusStatus();
-    applyFocusStatus(status);
+    if (focusRequests.isCurrentStatus(request)) applyFocusStatus(status);
   } catch (error) {
     if (!focusRequests.isCurrentStatus(request)) return;
     focusStatusError = focusCommandFailure(error).message;
