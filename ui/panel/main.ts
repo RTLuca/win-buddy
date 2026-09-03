@@ -27,6 +27,7 @@ import {
   createFocusSurfaceBootstrap,
   focusChoicesAfterSnapshot,
   focusCommandFailure,
+  focusFeedbackAfterSnapshot,
   focusMutationTarget,
   focusPhaseHeading,
   focusSnapshotIsNewer,
@@ -34,6 +35,7 @@ import {
   panelState,
   presetTimingLabel,
   type FocusPane,
+  type FocusSnapshotSource,
 } from "./focus-controller";
 
 // ------------------------------------------------------------------ tabs
@@ -587,28 +589,38 @@ focusPrepareForm.addEventListener("submit", (event) => {
   }
 });
 
-function applyFocusStatus(status: FocusStatus): boolean {
+function applyFocusStatus(status: FocusStatus, source: FocusSnapshotSource): boolean {
   if (!focusSnapshotIsNewer(currentFocusStatus, status)) return false;
+  const previousStatus = currentFocusStatus;
+  const feedback = focusFeedbackAfterSnapshot(
+    previousStatus,
+    status,
+    source,
+    focusActionError,
+  );
   const currentChoices = {
     durationChoicesOpen,
     finishChoicesOpen,
     interruptionReasonOpen,
   };
-  const nextChoices = focusChoicesAfterSnapshot(currentFocusStatus, status, currentChoices);
+  const nextChoices = focusChoicesAfterSnapshot(previousStatus, status, currentChoices);
   durationChoicesOpen = nextChoices.durationChoicesOpen;
   finishChoicesOpen = nextChoices.finishChoicesOpen;
   interruptionReasonOpen = nextChoices.interruptionReasonOpen;
   if (nextChoices !== currentChoices) zeroRefreshLatch = null;
   currentFocusStatus = status;
   focusStatusError = null;
-  focusActionError = null;
+  focusActionError = feedback.actionError;
+  if (source === "status" && feedback.domainChanged) {
+    focusRequests.statusSnapshotAccepted(previousStatus, status);
+  }
   renderFocusPrepare();
   tickFocusClock();
   return true;
 }
 
 function applyAuthoritativeFocusStatus(status: FocusStatus): boolean {
-  if (!applyFocusStatus(status)) return false;
+  if (!applyFocusStatus(status, "authoritative")) return false;
   focusRequests.authoritativeSnapshotArrived();
   void loadFocusHistory();
   return true;
@@ -629,7 +641,7 @@ async function loadFocusStatus(): Promise<void> {
   const request = focusRequests.beginStatus();
   try {
     const status = await ipc.focusStatus();
-    if (focusRequests.isCurrentStatus(request)) applyFocusStatus(status);
+    if (focusRequests.isCurrentStatus(request)) applyFocusStatus(status, "status");
   } catch (error) {
     if (!focusRequests.isCurrentStatus(request)) return;
     focusStatusError = focusCommandFailure(error).message;

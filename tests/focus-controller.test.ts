@@ -8,6 +8,7 @@ import {
   createFocusRequestSequencer,
   createFocusSurfaceBootstrap,
   focusCommandFailure,
+  focusFeedbackAfterSnapshot,
   focusMutationTarget,
   focusPhaseHeading,
   focusChoicesAfterSnapshot,
@@ -219,6 +220,29 @@ test("an authoritative event supersedes in-flight status and history responses",
   assert.equal(sequencing.isCurrentHistory(historyRequest), false);
 });
 
+test("accepted authoritative snapshots invalidate a mutation token across an idle ABA", () => {
+  const sequencing = createFocusRequestSequencer();
+  const initialIdle = status(null, 10);
+  const mutation = sequencing.beginMutation(initialIdle);
+  const staleActive = status("running", 9);
+
+  if (focusSnapshotIsNewer(initialIdle, staleActive)) {
+    sequencing.authoritativeSnapshotArrived();
+  }
+  assert.equal(sequencing.isCurrentMutation(mutation, initialIdle), true);
+
+  const active = status("running", 11);
+  if (focusSnapshotIsNewer(initialIdle, active)) {
+    sequencing.authoritativeSnapshotArrived();
+  }
+  const nextIdle = status(null, 12);
+  if (focusSnapshotIsNewer(active, nextIdle)) {
+    sequencing.authoritativeSnapshotArrived();
+  }
+
+  assert.equal(sequencing.isCurrentMutation(mutation, nextIdle), false);
+});
+
 test("a mutation start invalidates a status read that began before it", () => {
   const sequencing = createFocusRequestSequencer();
   const current = status("running", 10);
@@ -237,6 +261,71 @@ test("a same-domain reread does not hide an internal mutation failure", () => {
   const reread = status("running", 11);
 
   assert.equal(sequencing.isCurrentMutation(mutation, reread), true);
+});
+
+test("an error that finishes before a later same-domain status response remains visible", () => {
+  const sequencing = createFocusRequestSequencer();
+  const before = status("running", 10);
+  const mutation = sequencing.beginMutation(before);
+  const statusRequest = sequencing.beginStatus();
+  let actionError: string | null = null;
+
+  if (sequencing.isCurrentMutation(mutation, before)) actionError = "Errore interno";
+  const reread = status("running", 11);
+  if (sequencing.isCurrentStatus(statusRequest) && focusSnapshotIsNewer(before, reread)) {
+    const feedback = focusFeedbackAfterSnapshot(before, reread, "status", actionError);
+    sequencing.statusSnapshotAccepted(before, reread);
+    actionError = feedback.actionError;
+  }
+
+  assert.equal(actionError, "Errore interno");
+});
+
+test("an internal error remains visible when its same-domain status response finishes first", () => {
+  const sequencing = createFocusRequestSequencer();
+  const before = status("running", 10);
+  const mutation = sequencing.beginMutation(before);
+  const statusRequest = sequencing.beginStatus();
+  let actionError: string | null = null;
+
+  const reread = status("running", 11);
+  if (sequencing.isCurrentStatus(statusRequest) && focusSnapshotIsNewer(before, reread)) {
+    const feedback = focusFeedbackAfterSnapshot(before, reread, "status", actionError);
+    sequencing.statusSnapshotAccepted(before, reread);
+    actionError = feedback.actionError;
+  }
+  if (sequencing.isCurrentMutation(mutation, reread)) actionError = "Errore interno";
+
+  assert.equal(actionError, "Errore interno");
+});
+
+test("a true status domain change clears an earlier error and suppresses a later one", () => {
+  const before = status("running", 10);
+  const changed = status("paused", 11);
+  changed.active!.transition_revision = 5;
+  changed.transition_revision = 5;
+
+  const errorFirst = createFocusRequestSequencer();
+  const firstMutation = errorFirst.beginMutation(before);
+  let firstError: string | null = errorFirst.isCurrentMutation(firstMutation, before)
+    ? "Errore interno"
+    : null;
+  const firstFeedback = focusFeedbackAfterSnapshot(before, changed, "status", firstError);
+  errorFirst.statusSnapshotAccepted(before, changed);
+  firstError = firstFeedback.actionError;
+
+  const responseFirst = createFocusRequestSequencer();
+  const secondMutation = responseFirst.beginMutation(before);
+  let secondError: string | null = null;
+  const secondFeedback = focusFeedbackAfterSnapshot(before, changed, "status", secondError);
+  responseFirst.statusSnapshotAccepted(before, changed);
+  secondError = secondFeedback.actionError;
+  if (responseFirst.isCurrentMutation(secondMutation, changed)) {
+    secondError = "Errore interno";
+  }
+
+  assert.equal(firstError, null);
+  assert.equal(secondError, null);
 });
 
 test("a real domain event suppresses an older mutation failure", () => {

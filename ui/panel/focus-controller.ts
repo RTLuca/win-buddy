@@ -49,6 +49,7 @@ export interface FocusRequestSequencer {
   beginHistory(): number;
   beginMutation(status: FocusStatus | null): FocusMutationRequest;
   authoritativeSnapshotArrived(): void;
+  statusSnapshotAccepted(previous: FocusStatus | null, next: FocusStatus): void;
   isCurrentStatus(token: number): boolean;
   isCurrentHistory(token: number): boolean;
   isCurrentMutation(token: FocusMutationRequest, status: FocusStatus | null): boolean;
@@ -72,6 +73,13 @@ export interface FocusTransientChoices {
   durationChoicesOpen: boolean;
   finishChoicesOpen: boolean;
   interruptionReasonOpen: boolean;
+}
+
+export type FocusSnapshotSource = "status" | "authoritative";
+
+export interface FocusSnapshotFeedback {
+  actionError: string | null;
+  domainChanged: boolean;
 }
 
 export interface HistorySummary {
@@ -127,6 +135,10 @@ export function createFocusRequestSequencer(): FocusRequestSequencer {
     authoritativeSnapshotArrived: () => {
       statusVersion += 1;
       historyVersion += 1;
+      mutationVersion += 1;
+    },
+    statusSnapshotAccepted: (previous, next) => {
+      if (focusSnapshotChanged(previous, next)) mutationVersion += 1;
     },
     isCurrentStatus: (token) => token === statusVersion,
     isCurrentHistory: (token) => token === historyVersion,
@@ -174,6 +186,19 @@ function focusSnapshotChanged(
   next: FocusStatus,
 ): boolean {
   return focusSnapshotIdentity(previous) !== focusSnapshotIdentity(next);
+}
+
+export function focusFeedbackAfterSnapshot(
+  previous: FocusStatus | null,
+  next: FocusStatus,
+  source: FocusSnapshotSource,
+  actionError: string | null,
+): FocusSnapshotFeedback {
+  const domainChanged = focusSnapshotChanged(previous, next);
+  return {
+    actionError: source === "authoritative" || domainChanged ? null : actionError,
+    domainChanged,
+  };
 }
 
 export function focusChoicesAfterSnapshot(
