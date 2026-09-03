@@ -10,20 +10,36 @@ import {
   EVT_BUBBLE_DISMISS,
   EVT_BUBBLE_SHOW,
   EVT_BUDDY_CHANGED,
+  EVT_FOCUS_CHANGED,
   EVT_MODE_CHANGED,
   EVT_POMODORO_PRESENTATION,
   EVT_STATE_CHANGED,
   STATE_COLOR,
-  fmtCountdown,
   type BubbleDismiss,
   type BubbleShow,
   type BuddyChanged,
+  type FocusFinishOutcome,
+  type FocusStatus,
   type ModeChanged,
   type PomodoroPresentation,
   type StateChanged,
 } from "../shared/contracts";
+import {
+  buddyActions,
+  focusIndicator,
+} from "../shared/focus-view-model";
 import * as ipc from "../shared/ipc";
-import { BubbleLayer, stateLabel } from "./bubbles";
+import { BubbleLayer } from "./bubbles";
+import {
+  createFocusSnapshotGate,
+  focusFinishCommand,
+  focusHitbox,
+  overlayActionCommand,
+  overlayCommandFailure,
+  overlayVisibility,
+  type FocusRect,
+  type OverlayActionCommand,
+} from "./focus-controller";
 import {
   connectPomodoroPresentationSource,
   createPomodoroPresentationConsumer,
@@ -35,10 +51,11 @@ import { OverlayScene, type ScreenRect } from "./scene";
 const stage = document.getElementById("stage")!;
 const soberEl = document.getElementById("sober")!;
 const soberLed = document.getElementById("soberLed")!;
-const soberLbl = document.getElementById("soberLbl")!;
-const soberTime = document.getElementById("soberTime")!;
-const quickbar = document.getElementById("quickbar")!;
-const qbPomo = document.getElementById("qbPomo") as HTMLButtonElement;
+const focusChip = document.getElementById("focusChip") as HTMLOutputElement;
+const actionDock = document.getElementById("actionDock")!;
+const focusActions = document.getElementById("focusActions")!;
+const finishChooser = document.getElementById("finishChooser")!;
+const focusFeedback = document.getElementById("focusFeedback")!;
 const qbMove = document.getElementById("qbMove") as HTMLButtonElement;
 const qbScale = document.getElementById("qbScale") as HTMLButtonElement;
 const scalePopover = document.getElementById("scalePopover")!;
@@ -59,6 +76,10 @@ let lastState: StateChanged = { state: "idle" };
 let lastSent: ScreenRect = { x: -1, y: -1, w: -1, h: -1 };
 let lastSentAt = 0;
 let lastCreatureRect: ScreenRect | null = null;
+let currentFocusStatus: FocusStatus | null = null;
+let focusStatusError: string | null = null;
+let focusBusy = false;
+let pointerInside = false;
 
 // ------------------------------------------------------------- hit-test
 
@@ -71,22 +92,24 @@ function reportHitbox(creature: ScreenRect | null, force = false): void {
   const now = performance.now();
   if (!force && now - lastSentAt < 100) return;
 
-  let rect: ScreenRect | null = null;
-  if (mode === "sober") {
-    const r = soberEl.getBoundingClientRect();
-    rect = { x: r.left, y: r.top, w: r.width, h: r.height };
-  } else {
-    rect = creature;
-    rect = union(rect, bubbles.rect());
-  }
-  if (quickbar.classList.contains("on")) {
-    const q = quickbar.getBoundingClientRect();
-    rect = union(rect, { x: q.left, y: q.top, w: q.width, h: q.height });
-  }
-  if (!scalePopover.hidden && scalePopover.classList.contains("on")) {
-    const s = scalePopover.getBoundingClientRect();
-    rect = union(rect, { x: s.left, y: s.top, w: s.width, h: s.height });
-  }
+  const elementRect = (element: Element): FocusRect => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
+  };
+  const base = mode === "sober" ? null : union(creature, bubbles.rect());
+  const rect = focusHitbox({
+    base,
+    chip: elementRect(soberEl),
+    dock: actionDock.classList.contains("on") ? elementRect(actionDock) : null,
+    chooser:
+      !finishChooser.hidden && finishChooser.classList.contains("on")
+        ? elementRect(finishChooser)
+        : null,
+    scale:
+      !scalePopover.hidden && scalePopover.classList.contains("on")
+        ? elementRect(scalePopover)
+        : null,
+  });
   if (!rect) return;
 
   const W = window.innerWidth || 1;
@@ -128,35 +151,51 @@ scene.onFrame = (anchor, creature) => {
   reportHitbox(creature);
 };
 
-// ------------------------------------------------------------ barra rapida
+// ------------------------------------------------------------- dock focus
 
-// Compare quando il cursore è sulla creatura (cioè quando la finestra
-// accetta i clic) e resta un attimo dopo che se n'è andato.
-let qbTimer = 0;
-function pokeQuickbar(): void {
-  const wasVisible = quickbar.classList.contains("on");
-  quickbar.classList.add("on");
-  if (!wasVisible) reportHitbox(lastCreatureRect, true);
-  window.clearTimeout(qbTimer);
-  if (!scalePopover.classList.contains("on")) {
-    qbTimer = window.setTimeout(() => {
-      if (!quickbar.matches(":hover, :focus-within")) {
-        quickbar.classList.remove("on");
-        reportHitbox(lastCreatureRect, true);
-      }
-    }, 1600);
-  }
+function closeFinishChooser(restoreFocus = false): void {
+  const trigger = focusActions.querySelector<HTMLButtonElement>(
+    '[data-focus-action="focus.finish"]',
+  );
+  finishChooser.classList.remove("on");
+  actionDock.classList.remove("choosing");
+  finishChooser.hidden = true;
+  finishChooser.inert = true;
+  if (restoreFocus) trigger?.focus({ preventScroll: true });
 }
-document.body.addEventListener("mousemove", pokeQuickbar);
-quickbar.addEventListener("focusout", pokeQuickbar);
+
+function syncDockVisibility(): void {
+  const { dockVisible } = overlayVisibility({
+    pointerInside,
+    focusWithin: actionDock.matches(":focus-within"),
+  });
+  actionDock.classList.toggle("on", dockVisible);
+  actionDock.toggleAttribute("inert", !dockVisible);
+  if (!dockVisible) {
+    closeFinishChooser();
+    closeScalePopover();
+  }
+  reportHitbox(lastCreatureRect, true);
+}
+
+document.body.addEventListener("pointerenter", () => {
+  pointerInside = true;
+  syncDockVisibility();
+});
+document.body.addEventListener("pointerleave", () => {
+  pointerInside = false;
+  syncDockVisibility();
+});
+actionDock.addEventListener("focusin", syncDockVisibility);
+actionDock.addEventListener("focusout", () => queueMicrotask(syncDockVisibility));
 
 function closeScalePopover(): void {
+  if (scalePopover.hidden) return;
   scalePopover.classList.remove("on");
   scalePopover.hidden = true;
   scalePopover.inert = true;
   qbScale.setAttribute("aria-expanded", "false");
   reportHitbox(lastCreatureRect, true);
-  pokeQuickbar();
 }
 
 qbScale.addEventListener("click", (e) => {
@@ -167,8 +206,6 @@ qbScale.addEventListener("click", (e) => {
     return;
   }
 
-  window.clearTimeout(qbTimer);
-  quickbar.classList.add("on");
   scalePopover.hidden = false;
   scalePopover.inert = false;
   scalePopover.classList.add("on");
@@ -242,7 +279,6 @@ qbMove.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation();
   closeScalePopover();
-  window.clearTimeout(qbTimer);
   void ipc.overlayDragStart();
 });
 
@@ -266,30 +302,152 @@ qbMove.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && scalePopover.classList.contains("on")) {
-    e.stopPropagation();
+  if (e.key !== "Escape") return;
+  if (scalePopover.classList.contains("on")) {
     closeScalePopover();
     qbScale.focus();
+  } else if (finishChooser.classList.contains("on")) {
+    closeFinishChooser(true);
+  } else {
+    return;
   }
+  e.stopPropagation();
 });
 
-function refreshQuickbarPomo(): void {
-  const active = lastState.state === "focus" || lastState.state === "break";
-  qbPomo.textContent = active ? "■" : "▶";
-  qbPomo.classList.toggle("go", !active);
-  qbPomo.classList.toggle("stop", active);
-  qbPomo.title = active ? "Interrompi la sessione" : "Avvia un focus";
+function openFinishChooser(): void {
+  closeScalePopover();
+  finishChooser.hidden = false;
+  finishChooser.inert = false;
+  actionDock.classList.add("choosing");
+  finishChooser.classList.add("on");
+  reportHitbox(lastCreatureRect, true);
+  finishChooser.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
 }
 
-document.getElementById("qbNote")!.addEventListener("click", (e) => {
-  e.stopPropagation();
-  void ipc.openCapture();
+function showFocusFeedback(message: string | null): void {
+  focusFeedback.textContent = message ?? "";
+  focusFeedback.hidden = !message;
+}
+
+function renderFocusChip(): void {
+  focusChip.value = currentFocusStatus
+    ? focusIndicator(currentFocusStatus, Date.now())
+    : focusStatusError
+      ? "Focus non disponibile"
+      : "Focus in caricamento";
+  soberLed.style.background = `#${STATE_COLOR[lastState.state]
+    .toString(16)
+    .padStart(6, "0")}`;
+}
+
+function renderFocusActions(): void {
+  focusActions.replaceChildren();
+  if (!currentFocusStatus) return;
+  const fragment = document.createDocumentFragment();
+  for (const action of buddyActions(currentFocusStatus)) {
+    // `break.start` non viene prodotto dal core in questa slice.
+    if (action.id === "break.start") continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = action.label;
+    button.setAttribute("aria-label", action.ariaLabel);
+    button.dataset.focusAction = action.id;
+    button.disabled = focusBusy;
+    fragment.append(button);
+  }
+  focusActions.append(fragment);
+  focusActions.setAttribute(
+    "aria-label",
+    currentFocusStatus.active?.kind === "focus" ? "Azioni focus" : "Azioni pausa",
+  );
+}
+
+function applyFocusStatus(status: FocusStatus): void {
+  closeFinishChooser();
+  currentFocusStatus = status;
+  focusStatusError = null;
+  renderFocusChip();
+  renderFocusActions();
+  reportHitbox(lastCreatureRect, true);
+}
+
+const focusSnapshots = createFocusSnapshotGate(applyFocusStatus);
+
+async function invokeFocusCommand(command: OverlayActionCommand): Promise<FocusStatus | null> {
+  switch (command.type) {
+    case "start-last":
+      return ipc.focusStartLast();
+    case "pause":
+      return ipc.focusPause(command.sessionId, command.expectedRevision);
+    case "resume":
+      return ipc.focusResume(command.sessionId, command.expectedRevision);
+    case "adjust":
+      return ipc.focusAdjust(command.sessionId, command.deltaMs, command.expectedRevision);
+    case "overtime":
+      return ipc.focusOvertime(command.sessionId, command.expectedRevision);
+    case "finish":
+      return ipc.focusFinish(
+        command.sessionId,
+        command.outcome,
+        command.expectedRevision,
+      );
+    case "capture":
+      await ipc.openCapture();
+      return null;
+    case "choose-finish":
+      openFinishChooser();
+      return null;
+  }
+}
+
+async function runFocusCommand(command: OverlayActionCommand): Promise<void> {
+  if (focusBusy) return;
+  if (command.type === "choose-finish") {
+    openFinishChooser();
+    return;
+  }
+  focusBusy = true;
+  showFocusFeedback(null);
+  renderFocusActions();
+  try {
+    const next = await invokeFocusCommand(command);
+    if (next) focusSnapshots.applyAuthoritative(next);
+  } catch (error) {
+    const failure = overlayCommandFailure(error);
+    if (failure.current) focusSnapshots.applyAuthoritative(failure.current);
+    focusStatusError = failure.message;
+    showFocusFeedback(failure.message);
+    renderFocusChip();
+  } finally {
+    focusBusy = false;
+    renderFocusActions();
+  }
+}
+
+focusActions.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const button = (event.target as Element).closest<HTMLButtonElement>("[data-focus-action]");
+  const status = currentFocusStatus;
+  if (!button || !status) return;
+  const command = overlayActionCommand(
+    status,
+    button.dataset.focusAction as Parameters<typeof overlayActionCommand>[1],
+  );
+  if (command) void runFocusCommand(command);
 });
-qbPomo.addEventListener("click", (e) => {
-  e.stopPropagation();
-  const active = lastState.state === "focus" || lastState.state === "break";
-  void (active ? ipc.pomodoroAbort() : ipc.pomodoroStart("focus"));
+
+finishChooser.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const button = (event.target as Element).closest<HTMLButtonElement>("[data-focus-outcome]");
+  const status = currentFocusStatus;
+  if (!button || !status) return;
+  const command = focusFinishCommand(
+    status,
+    button.dataset.focusOutcome as FocusFinishOutcome,
+  );
+  if (command) void runFocusCommand(command);
 });
+
 document.getElementById("qbPanel")!.addEventListener("click", (e) => {
   e.stopPropagation();
   void ipc.openPanel();
@@ -304,23 +462,13 @@ function applyMode(next: "full" | "sober"): void {
   soberEl.classList.toggle("on", sober);
   scene.setVisible(!sober);
   bubbles.setVisible(!sober); // in sobria parlano pillola e toast, non i fumetti
-  if (sober) {
-    renderSober();
-  }
-}
-
-function renderSober(): void {
-  const { state, until } = lastState;
-  soberLed.style.background = `#${STATE_COLOR[state].toString(16).padStart(6, "0")}`;
-  soberLbl.textContent = stateLabel(state);
-  soberTime.textContent = until ? fmtCountdown(until - Date.now()) : "";
+  renderFocusChip();
+  reportHitbox(lastCreatureRect, true);
 }
 
 setInterval(() => {
-  if (mode === "sober") {
-    renderSober();
-    reportHitbox(null);
-  }
+  renderFocusChip();
+  reportHitbox(lastCreatureRect);
 }, 500);
 
 // --------------------------------------------------------------- eventi
@@ -328,9 +476,7 @@ setInterval(() => {
 function applyState(s: StateChanged): void {
   lastState = s;
   scene.setState(s.state);
-  bubbles.setState(s);
-  refreshQuickbarPomo();
-  if (mode === "sober") renderSober();
+  renderFocusChip();
 }
 
 function applyBuddy(id: string): void {
@@ -356,10 +502,26 @@ async function init(): Promise<void> {
         ipc.on<BubbleDismiss>(EVT_BUBBLE_DISMISS, (b) => bubbles.dismiss(b.id)),
         ipc.on<BuddyChanged>(EVT_BUDDY_CHANGED, (b) => applyBuddy(b.creature_id)),
         ipc.on<ModeChanged>(EVT_MODE_CHANGED, (m) => applyMode(m.mode)),
+        ipc.on<FocusStatus>(EVT_FOCUS_CHANGED, (status) => {
+          focusSnapshots.applyAuthoritative(status);
+        }),
         ipc.on<PomodoroPresentation>(EVT_POMODORO_PRESENTATION, deliver),
       ]),
     replay: async () => {
-      const boot = await ipc.surfaceReady("overlay");
+      const statusRead = focusSnapshots.beginRead();
+      const [boot] = await Promise.all([
+        ipc.surfaceReady("overlay"),
+        ipc
+          .focusStatus()
+          .then((status) => focusSnapshots.applyRead(statusRead, status))
+          .catch((error) => {
+            const failure = overlayCommandFailure(error);
+            if (failure.current) focusSnapshots.applyAuthoritative(failure.current);
+            focusStatusError = failure.message;
+            showFocusFeedback(failure.message);
+            renderFocusChip();
+          }),
+      ]);
       if (!boot) return [];
       applyBuddy(boot.creature_id);
       applyMode(boot.mode);

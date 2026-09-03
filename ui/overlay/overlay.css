@@ -115,66 +115,158 @@
   border-color: var(--ink);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .bubble.urgent {
-    animation: none;
-  }
+/* ----------------------------------------------------- indicatore focus */
 
-  .quickbar button,
-  .scale-popover,
-  .scale-controls button {
-    transition: none;
-  }
-}
-
-/* ------------------------------------------------------- barra rapida */
-
-.quickbar {
+.focus-hud {
   position: absolute;
   left: 50%;
-  bottom: 6px;
+  bottom: 8px;
   transform: translateX(-50%);
   display: flex;
-  gap: 4px;
-  padding: 5px 7px;
-  background: rgba(23, 20, 38, 0.94);
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100vw - 12px);
+  padding: 7px 11px;
+  color: #e7e1f2;
+  background: rgba(23, 20, 38, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 150ms ease;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.quickbar.on {
+.focus-hud .led {
+  display: none;
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lavender);
+}
+
+.focus-hud.on {
+  right: 18px;
+  left: auto;
+  bottom: 18px;
+  transform: none;
+}
+
+.focus-hud.on .led {
+  display: block;
+}
+
+/* ---------------------------------------------------------- dock focus */
+
+.action-dock {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  width: min(314px, calc(100vw - 8px));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 5px 7px;
+  padding: 6px 7px;
+  color: #dcd5ec;
+  background: rgba(23, 20, 38, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 10px 26px rgba(10, 8, 20, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(-5px) scale(0.98);
+  transform-origin: 50% 0;
+  transition:
+    opacity 150ms ease,
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.action-dock.on {
   opacity: 1;
   pointer-events: auto;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.focus-actions,
+.quickbar {
+  display: flex;
+  align-items: center;
+}
+
+.focus-actions {
+  min-width: 0;
+  justify-content: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.focus-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.quickbar {
+  justify-content: center;
+  gap: 2px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.focus-actions button,
+.finish-chooser button,
+.quickbar button {
+  min-height: 30px;
+  border: 0;
+  color: #dcd5ec;
+  background: transparent;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.focus-actions button,
+.finish-chooser button {
+  flex: 0 0 auto;
+  padding: 0 9px;
+  border-radius: 7px;
 }
 
 .quickbar button {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  border: none;
-  background: transparent;
-  color: #dcd5ec;
-  font-size: 14px;
-  line-height: 1;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  transition:
-    background 140ms ease,
-    transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 0;
+  border-radius: 50%;
 }
 
+.focus-actions button:hover,
+.finish-chooser button:hover,
 .quickbar button:hover {
   background: rgba(255, 255, 255, 0.12);
 }
 
+.focus-actions button:active,
+.finish-chooser button:active,
 .quickbar button:active {
-  transform: scale(0.92);
+  transform: scale(0.94);
 }
 
+.focus-actions button:disabled,
+.finish-chooser button:disabled {
+  opacity: 0.52;
+}
+
+.focus-actions button:focus-visible,
+.finish-chooser button:focus-visible,
 .quickbar button:focus-visible,
 .scale-popover button:focus-visible,
 .scale-popover input:focus-visible {
@@ -200,18 +292,54 @@
   cursor: grabbing;
 }
 
-.quickbar button.go {
-  color: #93d9bc;
+.finish-chooser {
+  position: absolute;
+  left: 50%;
+  top: 5px;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  width: calc(100% - 10px);
+  gap: 3px;
+  padding: 5px;
+  color: #dcd5ec;
+  background: rgba(23, 20, 38, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(10, 8, 20, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(-3px) scale(0.98);
+  transform-origin: 50% 0;
+  transition:
+    opacity 140ms ease,
+    transform 170ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.quickbar button.stop {
+.finish-chooser.on {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.action-dock.choosing .focus-actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.focus-feedback {
+  grid-column: 1 / -1;
+  margin: 0;
   color: var(--amber);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
 }
 
 .scale-popover {
   position: absolute;
   left: 50%;
-  bottom: 52px;
+  top: calc(100% + 6px);
   width: min(220px, calc(100vw - 12px));
   padding: 9px 10px 10px;
   color: #dcd5ec;
@@ -223,8 +351,8 @@
     0 10px 26px rgba(10, 8, 20, 0.42);
   opacity: 0;
   pointer-events: none;
-  transform: translateX(-50%) translateY(5px) scale(0.97);
-  transform-origin: 50% 100%;
+  transform: translateX(-50%) translateY(-5px) scale(0.97);
+  transform-origin: 50% 0;
   transition:
     opacity 150ms ease,
     transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -278,9 +406,7 @@
   color: #dcd5ec;
   background: rgba(255, 255, 255, 0.05);
   line-height: 1;
-  transition:
-    background 140ms ease,
-    transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .scale-controls button:hover {
@@ -298,50 +424,23 @@
 }
 
 @media (max-width: 220px) {
-  .quickbar {
-    gap: 2px;
-    padding: 4px 5px;
+  .action-dock {
+    width: calc(100vw - 8px);
   }
 
-  .quickbar button {
-    width: 26px;
-    height: 26px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble.urgent {
+    animation: none;
   }
-}
 
-/* ------------------------------------------------------- modalità sobria */
-
-.sober {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  display: none;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 13px 7px 10px;
-  background: rgba(23, 20, 38, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 999px;
-  color: #dcd5ec;
-  font-family: var(--mono);
-  font-size: 12px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
-}
-
-.sober.on {
-  display: flex;
-}
-
-.sober .led {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--lavender);
-}
-
-.sober .lbl {
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #8a80a8;
+  .action-dock,
+  .finish-chooser,
+  .quickbar button,
+  .focus-actions button,
+  .scale-popover,
+  .scale-controls button {
+    transition: none;
+  }
 }

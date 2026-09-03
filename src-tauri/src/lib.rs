@@ -47,6 +47,7 @@ pub fn run() {
             commands::note_dismiss,
             commands::note_snooze,
             commands::focus_start,
+            commands::focus_start_last,
             commands::focus_pause,
             commands::focus_resume,
             commands::focus_adjust,

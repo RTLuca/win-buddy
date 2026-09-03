@@ -392,6 +392,25 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Preset per l'avvio rapido: il più recente ancora referenziabile dallo
+    /// storico, oppure il default quando lo storico non offre una scelta.
+    pub fn quick_start_preset(&self) -> Result<PomodoroPreset> {
+        let recent = self
+            .conn
+            .query_row(
+                "SELECT p.*
+                 FROM pomodoro_sessions s
+                 JOIN pomodoro_presets p ON p.id = s.preset_id
+                 WHERE s.kind = 'focus'
+                 ORDER BY s.started_at DESC, s.id DESC
+                 LIMIT 1",
+                [],
+                preset_from_row,
+            )
+            .optional()?;
+        recent.map_or_else(|| self.default_preset(), Ok)
+    }
+
     pub fn start_focus(&self, request: StartSession, started_at: i64) -> Result<PomodoroSession> {
         let deadline_at = started_at
             .checked_add(request.planned_duration_ms)
@@ -1212,6 +1231,36 @@ mod tests {
         assert_eq!(presets[0].name, "Classico");
         assert_eq!(presets[0].focus_ms, 25 * MIN);
         assert_eq!(s.default_preset().unwrap().id, 1);
+    }
+
+    #[test]
+    fn quick_start_preset_skips_a_deleted_recent_preset_before_defaulting() {
+        let s = store();
+        let older = s
+            .start_focus(StartSession::focus(3, "Sprint", 15 * MIN), 0)
+            .unwrap();
+        s.resolve_session(
+            older.id,
+            older.transition_revision,
+            SessionOutcome::Completed,
+            15 * MIN,
+        )
+        .unwrap();
+        let latest = s
+            .start_focus(StartSession::focus(2, "Deep Work", 50 * MIN), 20 * MIN)
+            .unwrap();
+        s.resolve_session(
+            latest.id,
+            latest.transition_revision,
+            SessionOutcome::Completed,
+            70 * MIN,
+        )
+        .unwrap();
+        s.conn
+            .execute("DELETE FROM pomodoro_presets WHERE id = 2", [])
+            .unwrap();
+
+        assert_eq!(s.quick_start_preset().unwrap().id, 3);
     }
 
     #[test]

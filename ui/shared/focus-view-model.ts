@@ -73,6 +73,17 @@ export function focusLabel(status: FocusStatus): string {
   return FOCUS_PHASE_LABEL[session.phase];
 }
 
+/** Compone i due segmenti approvati nell'ordine specifico della fase. */
+export function focusIndicator(status: FocusStatus, now: number): string {
+  const label = focusLabel(status);
+  const clock = focusClock(status, now);
+  if (!clock) return label;
+  if (!label) return clock;
+  return status.active?.phase === "ready_to_close"
+    ? `${clock} · ${label}`
+    : `${label} · ${clock}`;
+}
+
 /**
  * Presenta nell'ordine ricevuto soltanto le azioni autorizzate dal core.
  * Le etichette accessibili distinguono il contesto focus da quello pausa.

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buddyActions,
   focusClock,
+  focusIndicator,
   focusLabel,
 } from "../ui/shared/focus-view-model.ts";
 import type {
@@ -227,4 +228,29 @@ test("every semantic action has a visible and accessible label", () => {
       { id: "break.skip", label: "Salta", ariaLabel: "Salta pausa" },
     ],
   );
+});
+
+test("the persistent chip composes every approved phase without duplicate segments", () => {
+  const idle: FocusStatus = {
+    active: null,
+    effective_focus_ms: 0,
+    remaining_ms: null,
+    overtime_ms: null,
+    allowed_actions: ["focus.start_last"],
+    pending_captures: 0,
+    transition_revision: null,
+  };
+  const paused = fixture({ phase: "paused", paused_remaining_ms: 90_000 });
+  const ready = fixture({ phase: "ready_to_close" });
+  const overtime = fixture({ phase: "overtime", overtime_started_at: 1_000 });
+  const runningBreak = breakFixture("short_break", "running");
+  const readyBreak = breakFixture("short_break", "ready_to_close");
+
+  assert.equal(focusIndicator(idle, 71_000), "Pronto");
+  assert.equal(focusIndicator(fixture(), 60_001), "Focus · 24:00");
+  assert.equal(focusIndicator(paused, 500_000), "In pausa · 1:30");
+  assert.equal(focusIndicator(ready, 2_000_000), "00:00 · decidi");
+  assert.equal(focusIndicator(overtime, 71_000), "+1:10");
+  assert.equal(focusIndicator(runningBreak, 1_410_000), "Pausa · 1:30");
+  assert.equal(focusIndicator(readyBreak, 2_000_000), "Pronto a tornare");
 });

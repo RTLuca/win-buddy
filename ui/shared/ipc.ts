@@ -47,6 +47,7 @@ export const noteSnooze = (id: number, minutes: number) =>
 
 export const focusStart = (request: StartSession) =>
   invoke<FocusStatus>("focus_start", { request });
+export const focusStartLast = () => invoke<FocusStatus>("focus_start_last");
 export const focusPause = (
   sessionId: number,
   expectedRevision: number,

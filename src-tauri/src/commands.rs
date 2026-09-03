@@ -381,6 +381,18 @@ fn apply_focus_start(
     pomodoro::start(store, request, now)
 }
 
+fn apply_focus_start_last(
+    store: &Store,
+    now: i64,
+) -> win_buddy_core::Result<pomodoro::TransitionResult> {
+    let preset = store.quick_start_preset()?;
+    apply_focus_start(
+        store,
+        StartSession::focus(preset.id, "", preset.focus_ms),
+        now,
+    )
+}
+
 fn apply_legacy_abort(store: &Store, now: i64) -> win_buddy_core::Result<()> {
     let Some(session) = store.open_session()? else {
         return Ok(());
@@ -662,6 +674,19 @@ pub async fn focus_resume(
             expected_revision,
         },
     )
+}
+
+#[tauri::command]
+pub async fn focus_start_last(app: AppHandle) -> FocusCmdResult<FocusStatusDto> {
+    let now = now_ms();
+    {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        apply_focus_start_last(&store, now)
+            .map_err(|error| focus_command_error_from_store(&store, now, error))?;
+    }
+    touch(&app);
+    sync_and_emit_focus_changed(&app).map_err(focus_internal_error)
 }
 
 #[tauri::command]
@@ -1237,6 +1262,51 @@ mod tests {
         assert_eq!(presets[2].name, "Sprint");
         assert!(presets[0].is_default);
         assert_eq!(presets[1].focus_ms, 50 * MIN);
+    }
+
+    #[test]
+    fn focus_start_last_falls_back_to_the_default_preset_without_history() {
+        let store = Store::open_in_memory().unwrap();
+
+        let started = apply_focus_start_last(&store, 10 * MIN).unwrap().session;
+
+        assert_eq!(started.kind, SessionKind::Focus);
+        assert_eq!(started.preset_id, Some(1));
+        assert_eq!(started.planned_duration_ms, 25 * MIN);
+        assert_eq!(started.deadline_at, 35 * MIN);
+        assert_eq!(started.intention, "");
+    }
+
+    #[test]
+    fn focus_start_last_reuses_the_latest_existing_preset_after_restart() {
+        let database = TempDatabase::new();
+        {
+            let store = Store::open(&database.path).unwrap();
+            let first = pomodoro::start(
+                &store,
+                StartSession::focus(2, "Sessione precedente", 50 * MIN),
+                0,
+            )
+            .unwrap()
+            .session;
+            pomodoro::finish(
+                &store,
+                first.id,
+                first.transition_revision,
+                SessionOutcome::Completed,
+                None,
+                50 * MIN,
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&database.path).unwrap();
+        let restarted = apply_focus_start_last(&store, 60 * MIN).unwrap().session;
+
+        assert_eq!(restarted.preset_id, Some(2));
+        assert_eq!(restarted.planned_duration_ms, 50 * MIN);
+        assert_eq!(restarted.deadline_at, 110 * MIN);
+        assert_eq!(restarted.intention, "");
     }
 
     #[test]
