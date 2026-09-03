@@ -34,6 +34,39 @@ export interface FocusCommandFailure {
   current: FocusStatus | null;
 }
 
+export interface FocusMutationTarget {
+  sessionId: number;
+  expectedRevision: number;
+}
+
+export interface FocusRequestSequencer {
+  beginStatus(): number;
+  beginHistory(): number;
+  authoritativeSnapshotArrived(): void;
+  isCurrentStatus(token: number): boolean;
+  isCurrentHistory(token: number): boolean;
+}
+
+export interface FocusSurfaceBootstrap {
+  start(): Promise<void>;
+}
+
+interface FocusSurfaceBootstrapDependencies {
+  registerListener(): Promise<unknown>;
+  loadInitialState(): Promise<unknown>;
+  markSurfaceReady(): Promise<unknown>;
+}
+
+interface FocusClockAccessibilityTarget {
+  setAttribute(name: string, value: string): void;
+}
+
+export interface FocusTransientChoices {
+  durationChoicesOpen: boolean;
+  finishChoicesOpen: boolean;
+  interruptionReasonOpen: boolean;
+}
+
 export interface HistorySummary {
   loadedSessions: number;
   closedFocusSessions: number;
@@ -52,6 +85,82 @@ export function panelState(status: FocusStatus, pane: FocusPane): PanelFocusStat
     showPreparationForm: pane === "prepare" && !active,
     showRunningControls: pane === "prepare" && active,
   };
+}
+
+export function focusMutationTarget(status: FocusStatus): FocusMutationTarget | null {
+  const active = status.active;
+  return active
+    ? { sessionId: active.id, expectedRevision: active.transition_revision }
+    : null;
+}
+
+export function createFocusRequestSequencer(): FocusRequestSequencer {
+  let statusVersion = 0;
+  let historyVersion = 0;
+  return {
+    beginStatus: () => ++statusVersion,
+    beginHistory: () => ++historyVersion,
+    authoritativeSnapshotArrived: () => {
+      statusVersion += 1;
+      historyVersion += 1;
+    },
+    isCurrentStatus: (token) => token === statusVersion,
+    isCurrentHistory: (token) => token === historyVersion,
+  };
+}
+
+export function createFocusSurfaceBootstrap(
+  dependencies: FocusSurfaceBootstrapDependencies,
+): FocusSurfaceBootstrap {
+  let started: Promise<void> | null = null;
+  return {
+    start() {
+      started ??= (async () => {
+        await dependencies.registerListener();
+        await Promise.all([
+          dependencies.loadInitialState(),
+          dependencies.markSurfaceReady(),
+        ]);
+      })();
+      return started;
+    },
+  };
+}
+
+export function configureFocusClockAccessibility(
+  clock: FocusClockAccessibilityTarget,
+): void {
+  clock.setAttribute("role", "timer");
+  clock.setAttribute("aria-live", "off");
+  clock.setAttribute("aria-label", "Tempo della sessione");
+}
+
+function focusSnapshotIdentity(status: FocusStatus | null): string {
+  const active = status?.active;
+  return active
+    ? `${active.id}:${active.transition_revision}:${active.phase}`
+    : "idle";
+}
+
+function focusSnapshotChanged(
+  previous: FocusStatus | null,
+  next: FocusStatus,
+): boolean {
+  return focusSnapshotIdentity(previous) !== focusSnapshotIdentity(next);
+}
+
+export function focusChoicesAfterSnapshot(
+  previous: FocusStatus | null,
+  next: FocusStatus,
+  current: FocusTransientChoices,
+): FocusTransientChoices {
+  return focusSnapshotChanged(previous, next)
+    ? {
+        durationChoicesOpen: false,
+        finishChoicesOpen: false,
+        interruptionReasonOpen: false,
+      }
+    : current;
 }
 
 export function focusPhaseHeading(status: FocusStatus): string {

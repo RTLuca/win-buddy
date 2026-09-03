@@ -22,7 +22,12 @@ import { focusClock } from "../shared/focus-view-model";
 import {
   buildFocusStart,
   clockBoundaryRefresh,
+  configureFocusClockAccessibility,
+  createFocusRequestSequencer,
+  createFocusSurfaceBootstrap,
+  focusChoicesAfterSnapshot,
   focusCommandFailure,
+  focusMutationTarget,
   focusPhaseHeading,
   historySummary,
   panelState,
@@ -200,6 +205,7 @@ let durationChoicesOpen = false;
 let finishChoicesOpen = false;
 let interruptionReasonOpen = false;
 let zeroRefreshLatch: string | null = null;
+const focusRequests = createFocusRequestSequencer();
 
 function setFocusPane(pane: FocusPane, moveFocus = false): void {
   currentFocusPane = pane;
@@ -336,7 +342,7 @@ function renderRunningFocus(status: FocusStatus): void {
   const clock = document.createElement("output");
   clock.id = "focusClock";
   clock.className = "focus-clock";
-  clock.setAttribute("aria-label", "Tempo della sessione");
+  configureFocusClockAccessibility(clock);
   clock.textContent = focusClock(status, Date.now());
   head.append(phase, clock);
 
@@ -374,9 +380,11 @@ function renderRunningFocus(status: FocusStatus): void {
       );
       button.disabled = focusBusy;
       button.addEventListener("click", () => {
-        const revision = currentRevision();
-        if (revision !== null) {
-          void runFocusMutation(() => ipc.focusAdjust(minutes * 60_000, revision));
+        const target = currentMutationTarget();
+        if (target) {
+          void runFocusMutation(() =>
+            ipc.focusAdjust(target.sessionId, minutes * 60_000, target.expectedRevision),
+          );
         }
       });
       group.append(button);
@@ -419,7 +427,6 @@ function focusActionButton(action: FocusAction, isBreak: boolean): HTMLButtonEle
 }
 
 function handleFocusAction(action: FocusAction): void {
-  const revision = currentRevision();
   if (action === "focus.capture") {
     focusActionError = null;
     void ipc.openCapture().catch((error: unknown) => {
@@ -435,12 +442,21 @@ function handleFocusAction(action: FocusAction): void {
     renderFocusPrepare();
     return;
   }
-  if (revision === null) return;
-  if (action === "focus.pause") void runFocusMutation(() => ipc.focusPause(revision));
-  if (action === "focus.resume") void runFocusMutation(() => ipc.focusResume(revision));
-  if (action === "focus.overtime") void runFocusMutation(() => ipc.focusOvertime(revision));
+  const target = currentMutationTarget();
+  if (!target) return;
+  if (action === "focus.pause") {
+    void runFocusMutation(() => ipc.focusPause(target.sessionId, target.expectedRevision));
+  }
+  if (action === "focus.resume") {
+    void runFocusMutation(() => ipc.focusResume(target.sessionId, target.expectedRevision));
+  }
+  if (action === "focus.overtime") {
+    void runFocusMutation(() => ipc.focusOvertime(target.sessionId, target.expectedRevision));
+  }
   if (action === "break.skip") {
-    void runFocusMutation(() => ipc.focusFinish("partial", revision));
+    void runFocusMutation(() =>
+      ipc.focusFinish(target.sessionId, "partial", target.expectedRevision),
+    );
   }
   if (action === "focus.finish") {
     if (currentFocusStatus?.active?.kind === "focus") {
@@ -449,7 +465,9 @@ function handleFocusAction(action: FocusAction): void {
       interruptionReasonOpen = false;
       renderFocusPrepare();
     } else {
-      void runFocusMutation(() => ipc.focusFinish("partial", revision));
+      void runFocusMutation(() =>
+        ipc.focusFinish(target.sessionId, "partial", target.expectedRevision),
+      );
     }
   }
 }
@@ -508,31 +526,34 @@ function renderFinishChoices(): void {
   }
 }
 
-function currentRevision(): number | null {
-  return currentFocusStatus?.transition_revision ?? null;
+function currentMutationTarget() {
+  return currentFocusStatus ? focusMutationTarget(currentFocusStatus) : null;
 }
 
 function finishFocus(outcome: FocusFinishOutcome, reason?: string | null): Promise<void> {
-  const revision = currentRevision();
-  if (revision === null) return Promise.resolve();
-  return runFocusMutation(() => ipc.focusFinish(outcome, revision, reason));
+  const target = currentMutationTarget();
+  if (!target) return Promise.resolve();
+  return runFocusMutation(() =>
+    ipc.focusFinish(target.sessionId, outcome, target.expectedRevision, reason),
+  );
 }
 
 async function runFocusMutation(operation: () => Promise<FocusStatus>): Promise<void> {
   if (focusBusy) return;
   focusBusy = true;
   focusActionError = null;
+  focusRequests.authoritativeSnapshotArrived();
   renderFocusPrepare();
   try {
     const next = await operation();
-    durationChoicesOpen = false;
-    finishChoicesOpen = false;
-    interruptionReasonOpen = false;
-    applyFocusStatus(next);
-    if (!next.active) await loadFocusHistory();
+    applyAuthoritativeFocusStatus(next);
   } catch (error) {
     const failure = focusCommandFailure(error);
-    if (failure.current) applyFocusStatus(failure.current);
+    if (failure.current) {
+      applyAuthoritativeFocusStatus(failure.current);
+    } else {
+      void loadFocusHistory();
+    }
     focusActionError = failure.message;
   } finally {
     focusBusy = false;
@@ -565,10 +586,26 @@ focusPrepareForm.addEventListener("submit", (event) => {
 });
 
 function applyFocusStatus(status: FocusStatus): void {
+  const currentChoices = {
+    durationChoicesOpen,
+    finishChoicesOpen,
+    interruptionReasonOpen,
+  };
+  const nextChoices = focusChoicesAfterSnapshot(currentFocusStatus, status, currentChoices);
+  durationChoicesOpen = nextChoices.durationChoicesOpen;
+  finishChoicesOpen = nextChoices.finishChoicesOpen;
+  interruptionReasonOpen = nextChoices.interruptionReasonOpen;
+  if (nextChoices !== currentChoices) zeroRefreshLatch = null;
   currentFocusStatus = status;
   focusStatusError = null;
   renderFocusPrepare();
   tickFocusClock();
+}
+
+function applyAuthoritativeFocusStatus(status: FocusStatus): void {
+  focusRequests.authoritativeSnapshotArrived();
+  applyFocusStatus(status);
+  void loadFocusHistory();
 }
 
 function tickFocusClock(): void {
@@ -583,9 +620,12 @@ function tickFocusClock(): void {
 window.setInterval(tickFocusClock, 500);
 
 async function loadFocusStatus(): Promise<void> {
+  const request = focusRequests.beginStatus();
   try {
-    applyFocusStatus(await ipc.focusStatus());
+    const status = await ipc.focusStatus();
+    if (focusRequests.isCurrentStatus(request)) applyFocusStatus(status);
   } catch (error) {
+    if (!focusRequests.isCurrentStatus(request)) return;
     focusStatusError = focusCommandFailure(error).message;
     renderFocusPrepare();
   }
@@ -607,16 +647,21 @@ async function loadFocusPresets(): Promise<void> {
 }
 
 async function loadFocusHistory(): Promise<void> {
+  const request = focusRequests.beginHistory();
   focusHistoryLoading = true;
   focusHistoryError = null;
   renderFocusHistory();
   renderFocusStats();
   try {
-    focusSessions = await ipc.pomodoroHistory(80);
+    const sessions = await ipc.pomodoroHistory(80);
+    if (!focusRequests.isCurrentHistory(request)) return;
+    focusSessions = sessions;
   } catch (error) {
+    if (!focusRequests.isCurrentHistory(request)) return;
     focusSessions = null;
     focusHistoryError = focusCommandFailure(error).message;
   } finally {
+    if (!focusRequests.isCurrentHistory(request)) return;
     focusHistoryLoading = false;
     renderFocusHistory();
     renderFocusStats();
@@ -900,15 +945,18 @@ void ipc.on(EVT_NOTES_CHANGED, () => {
   }
 });
 
-void ipc.on<FocusStatus>(EVT_FOCUS_CHANGED, (status) => {
-  applyFocusStatus(status);
-});
-
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") void ipc.closePanel();
 });
 
 void renderOpen();
-void refreshFocusSurface();
 void renderSettings();
-void ipc.surfaceReady("panel");
+const focusSurfaceBootstrap = createFocusSurfaceBootstrap({
+  registerListener: () =>
+    ipc.on<FocusStatus>(EVT_FOCUS_CHANGED, (status) => {
+      applyAuthoritativeFocusStatus(status);
+    }),
+  loadInitialState: refreshFocusSurface,
+  markSurfaceReady: () => ipc.surfaceReady("panel"),
+});
+void focusSurfaceBootstrap.start();

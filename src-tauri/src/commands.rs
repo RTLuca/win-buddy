@@ -291,20 +291,25 @@ fn sync_and_emit_focus_changed(app: &AppHandle) -> win_buddy_core::Result<FocusS
 
 enum FocusMutation<'a> {
     Pause {
+        session_id: i64,
         expected_revision: i64,
         reason: Option<&'a str>,
     },
     Resume {
+        session_id: i64,
         expected_revision: i64,
     },
     Adjust {
+        session_id: i64,
         expected_revision: i64,
         delta_ms: i64,
     },
     Overtime {
+        session_id: i64,
         expected_revision: i64,
     },
     Finish {
+        session_id: i64,
         expected_revision: i64,
         outcome: SessionOutcome,
         interruption_reason: Option<&'a str>,
@@ -316,31 +321,50 @@ fn apply_focus_mutation(
     mutation: FocusMutation<'_>,
     now: i64,
 ) -> win_buddy_core::Result<pomodoro::TransitionResult> {
+    let session_id = match &mutation {
+        FocusMutation::Pause { session_id, .. }
+        | FocusMutation::Resume { session_id, .. }
+        | FocusMutation::Adjust { session_id, .. }
+        | FocusMutation::Overtime { session_id, .. }
+        | FocusMutation::Finish { session_id, .. } => *session_id,
+    };
     let active = store
         .open_session()?
         .ok_or_else(|| win_buddy_core::CoreError::InvalidState("sessione non trovata".into()))?;
+    if active.id != session_id {
+        return Err(win_buddy_core::CoreError::StaleRevision);
+    }
     match mutation {
         FocusMutation::Pause {
+            session_id,
             expected_revision,
             reason,
-        } => pomodoro::pause(store, active.id, expected_revision, now, reason),
-        FocusMutation::Resume { expected_revision } => {
-            pomodoro::resume(store, active.id, expected_revision, now)
+        } => pomodoro::pause(store, session_id, expected_revision, now, reason),
+        FocusMutation::Resume {
+            session_id,
+            expected_revision,
+        } => {
+            pomodoro::resume(store, session_id, expected_revision, now)
         }
         FocusMutation::Adjust {
+            session_id,
             expected_revision,
             delta_ms,
-        } => pomodoro::adjust_duration(store, active.id, expected_revision, delta_ms, now),
-        FocusMutation::Overtime { expected_revision } => {
-            pomodoro::start_overtime(store, active.id, expected_revision, now)
+        } => pomodoro::adjust_duration(store, session_id, expected_revision, delta_ms, now),
+        FocusMutation::Overtime {
+            session_id,
+            expected_revision,
+        } => {
+            pomodoro::start_overtime(store, session_id, expected_revision, now)
         }
         FocusMutation::Finish {
+            session_id,
             expected_revision,
             outcome,
             interruption_reason,
         } => pomodoro::finish(
             store,
-            active.id,
+            session_id,
             expected_revision,
             outcome,
             interruption_reason,
@@ -364,6 +388,7 @@ fn apply_legacy_abort(store: &Store, now: i64) -> win_buddy_core::Result<()> {
     apply_focus_mutation(
         store,
         FocusMutation::Finish {
+            session_id: session.id,
             expected_revision: session.transition_revision,
             outcome: SessionOutcome::Interrupted,
             interruption_reason: None,
@@ -610,12 +635,14 @@ pub async fn focus_start(app: AppHandle, request: StartSession) -> FocusCmdResul
 #[tauri::command]
 pub async fn focus_pause(
     app: AppHandle,
+    session_id: i64,
     expected_revision: i64,
     reason: Option<String>,
 ) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(
         &app,
         FocusMutation::Pause {
+            session_id,
             expected_revision,
             reason: reason.as_deref(),
         },
@@ -625,20 +652,29 @@ pub async fn focus_pause(
 #[tauri::command]
 pub async fn focus_resume(
     app: AppHandle,
+    session_id: i64,
     expected_revision: i64,
 ) -> FocusCmdResult<FocusStatusDto> {
-    do_focus_mutation(&app, FocusMutation::Resume { expected_revision })
+    do_focus_mutation(
+        &app,
+        FocusMutation::Resume {
+            session_id,
+            expected_revision,
+        },
+    )
 }
 
 #[tauri::command]
 pub async fn focus_adjust(
     app: AppHandle,
+    session_id: i64,
     delta_ms: i64,
     expected_revision: i64,
 ) -> FocusCmdResult<FocusStatusDto> {
     do_focus_mutation(
         &app,
         FocusMutation::Adjust {
+            session_id,
             expected_revision,
             delta_ms,
         },
@@ -648,14 +684,22 @@ pub async fn focus_adjust(
 #[tauri::command]
 pub async fn focus_overtime(
     app: AppHandle,
+    session_id: i64,
     expected_revision: i64,
 ) -> FocusCmdResult<FocusStatusDto> {
-    do_focus_mutation(&app, FocusMutation::Overtime { expected_revision })
+    do_focus_mutation(
+        &app,
+        FocusMutation::Overtime {
+            session_id,
+            expected_revision,
+        },
+    )
 }
 
 #[tauri::command]
 pub async fn focus_finish(
     app: AppHandle,
+    session_id: i64,
     expected_revision: i64,
     outcome: FocusFinishOutcome,
     interruption_reason: Option<String>,
@@ -663,6 +707,7 @@ pub async fn focus_finish(
     do_focus_mutation(
         &app,
         FocusMutation::Finish {
+            session_id,
             expected_revision,
             outcome: outcome.into(),
             interruption_reason: interruption_reason.as_deref(),
@@ -1283,6 +1328,7 @@ mod tests {
         let error = apply_focus_mutation(
             &store,
             FocusMutation::Pause {
+                session_id: started.session.id,
                 expected_revision: 7,
                 reason: None,
             },
@@ -1304,11 +1350,60 @@ mod tests {
     }
 
     #[test]
+    fn stale_surface_session_id_does_not_mutate_a_replacement_at_the_same_revision() {
+        let store = Store::open_in_memory().unwrap();
+        let original =
+            pomodoro::start(&store, StartSession::focus(1, "Prima", 25 * MIN), 0).unwrap();
+        pomodoro::finish(
+            &store,
+            original.session.id,
+            0,
+            SessionOutcome::Partial,
+            None,
+            MIN,
+        )
+        .unwrap();
+        let replacement =
+            pomodoro::start(&store, StartSession::focus(1, "Seconda", 25 * MIN), 2 * MIN)
+                .unwrap();
+        let before = store
+            .get_session(replacement.session.id)
+            .unwrap()
+            .unwrap();
+
+        let error = apply_focus_mutation(
+            &store,
+            FocusMutation::Pause {
+                session_id: original.session.id,
+                expected_revision: 0,
+                reason: None,
+            },
+            3 * MIN,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, win_buddy_core::CoreError::StaleRevision));
+        let payload =
+            serde_json::to_value(focus_command_error_from_store(&store, 3 * MIN, error)).unwrap();
+        assert_eq!(payload["code"], "stale_revision");
+        assert_eq!(payload["current"]["active"]["id"], replacement.session.id);
+        assert_eq!(payload["current"]["transition_revision"], 0);
+        assert_eq!(
+            store
+                .get_session(replacement.session.id)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
     fn invalid_focus_request_has_a_distinct_code_and_current_snapshot() {
         let store = Store::open_in_memory().unwrap();
         let error = apply_focus_mutation(
             &store,
             FocusMutation::Pause {
+                session_id: 1,
                 expected_revision: 0,
                 reason: None,
             },
@@ -1335,6 +1430,7 @@ mod tests {
         let adjusted = apply_focus_mutation(
             &store,
             FocusMutation::Adjust {
+                session_id: started.session.id,
                 expected_revision: 0,
                 delta_ms: -5 * MIN,
             },
@@ -1373,6 +1469,7 @@ mod tests {
             apply_focus_mutation(
                 &store,
                 FocusMutation::Pause {
+                    session_id,
                     expected_revision: 0,
                     reason: None,
                 },
@@ -1387,6 +1484,7 @@ mod tests {
             apply_focus_mutation(
                 &store,
                 FocusMutation::Resume {
+                    session_id,
                     expected_revision: 1,
                 },
                 10 * MIN,
@@ -1404,6 +1502,7 @@ mod tests {
             apply_focus_mutation(
                 &store,
                 FocusMutation::Overtime {
+                    session_id,
                     expected_revision: 3,
                 },
                 15 * MIN,
@@ -1412,6 +1511,7 @@ mod tests {
             apply_focus_mutation(
                 &store,
                 FocusMutation::Finish {
+                    session_id,
                     expected_revision: 4,
                     outcome: SessionOutcome::Completed,
                     interruption_reason: None,

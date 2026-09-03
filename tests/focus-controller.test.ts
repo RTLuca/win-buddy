@@ -4,8 +4,13 @@ import test from "node:test";
 import {
   buildFocusStart,
   clockBoundaryRefresh,
+  configureFocusClockAccessibility,
+  createFocusRequestSequencer,
+  createFocusSurfaceBootstrap,
   focusCommandFailure,
+  focusMutationTarget,
   focusPhaseHeading,
+  focusChoicesAfterSnapshot,
   historySummary,
   panelState,
   presetTimingLabel,
@@ -190,6 +195,100 @@ test("clock boundary refresh is requested once per unchanged snapshot", () => {
   assert.deepEqual(first, { shouldRefresh: true, latch: "8:4:running:61000" });
   assert.deepEqual(repeated, { shouldRefresh: false, latch: "8:4:running:61000" });
   assert.deepEqual(nextSnapshot, { shouldRefresh: true, latch: "8:5:running:61000" });
+});
+
+test("a focus mutation target carries both the active session identity and revision", () => {
+  assert.deepEqual(focusMutationTarget(status("running")), {
+    sessionId: 8,
+    expectedRevision: 4,
+  });
+  assert.equal(focusMutationTarget(status(null)), null);
+});
+
+test("an authoritative event supersedes in-flight status and history responses", () => {
+  const sequencing = createFocusRequestSequencer();
+  const statusRequest = sequencing.beginStatus();
+  const historyRequest = sequencing.beginHistory();
+
+  sequencing.authoritativeSnapshotArrived();
+
+  assert.equal(sequencing.isCurrentStatus(statusRequest), false);
+  assert.equal(sequencing.isCurrentHistory(historyRequest), false);
+});
+
+test("a newer request supersedes only the older response in the same stream", () => {
+  const sequencing = createFocusRequestSequencer();
+  const oldStatus = sequencing.beginStatus();
+  const oldHistory = sequencing.beginHistory();
+  const newStatus = sequencing.beginStatus();
+  const newHistory = sequencing.beginHistory();
+
+  assert.equal(sequencing.isCurrentStatus(oldStatus), false);
+  assert.equal(sequencing.isCurrentStatus(newStatus), true);
+  assert.equal(sequencing.isCurrentHistory(oldHistory), false);
+  assert.equal(sequencing.isCurrentHistory(newHistory), true);
+});
+
+test("focus surface boot awaits one listener registration before loads and readiness", async () => {
+  const calls: string[] = [];
+  const bootstrap = createFocusSurfaceBootstrap({
+    registerListener: async () => {
+      calls.push("listener:start");
+      await Promise.resolve();
+      calls.push("listener:ready");
+    },
+    loadInitialState: async () => {
+      calls.push("load");
+    },
+    markSurfaceReady: async () => {
+      calls.push("surface-ready");
+    },
+  });
+
+  await Promise.all([bootstrap.start(), bootstrap.start()]);
+
+  assert.deepEqual(calls, ["listener:start", "listener:ready", "load", "surface-ready"]);
+});
+
+test("the half-second clock is a non-announcing timer", () => {
+  const attributes = new Map<string, string>();
+
+  configureFocusClockAccessibility({
+    setAttribute(name, value) {
+      attributes.set(name, value);
+    },
+  });
+
+  assert.deepEqual(Object.fromEntries(attributes), {
+    role: "timer",
+    "aria-live": "off",
+    "aria-label": "Tempo della sessione",
+  });
+});
+
+test("external identity, revision, and phase changes close transient action choosers", () => {
+  const initial = status("running");
+  const otherSession = status("running");
+  otherSession.active!.id = 9;
+  const nextRevision = status("running");
+  nextRevision.active!.transition_revision = 5;
+  nextRevision.transition_revision = 5;
+  const nextPhase = status("paused");
+  const openChoices = {
+    durationChoicesOpen: true,
+    finishChoicesOpen: true,
+    interruptionReasonOpen: true,
+  };
+  const closedChoices = {
+    durationChoicesOpen: false,
+    finishChoicesOpen: false,
+    interruptionReasonOpen: false,
+  };
+
+  assert.deepEqual(focusChoicesAfterSnapshot(initial, otherSession, openChoices), closedChoices);
+  assert.deepEqual(focusChoicesAfterSnapshot(initial, nextRevision, openChoices), closedChoices);
+  assert.deepEqual(focusChoicesAfterSnapshot(initial, nextPhase, openChoices), closedChoices);
+  assert.deepEqual(focusChoicesAfterSnapshot(initial, status("running"), openChoices), openChoices);
 });
 
 test("a typed stale error returns the authoritative current snapshot", () => {

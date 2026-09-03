@@ -47,20 +47,33 @@ export const noteSnooze = (id: number, minutes: number) =>
 
 export const focusStart = (request: StartSession) =>
   invoke<FocusStatus>("focus_start", { request });
-export const focusPause = (expectedRevision: number, reason?: string | null) =>
-  invoke<FocusStatus>("focus_pause", { expectedRevision, reason: reason ?? null });
-export const focusResume = (expectedRevision: number) =>
-  invoke<FocusStatus>("focus_resume", { expectedRevision });
-export const focusAdjust = (deltaMs: number, expectedRevision: number) =>
-  invoke<FocusStatus>("focus_adjust", { deltaMs, expectedRevision });
-export const focusOvertime = (expectedRevision: number) =>
-  invoke<FocusStatus>("focus_overtime", { expectedRevision });
+export const focusPause = (
+  sessionId: number,
+  expectedRevision: number,
+  reason?: string | null,
+) =>
+  invoke<FocusStatus>("focus_pause", {
+    sessionId,
+    expectedRevision,
+    reason: reason ?? null,
+  });
+export const focusResume = (sessionId: number, expectedRevision: number) =>
+  invoke<FocusStatus>("focus_resume", { sessionId, expectedRevision });
+export const focusAdjust = (
+  sessionId: number,
+  deltaMs: number,
+  expectedRevision: number,
+) => invoke<FocusStatus>("focus_adjust", { sessionId, deltaMs, expectedRevision });
+export const focusOvertime = (sessionId: number, expectedRevision: number) =>
+  invoke<FocusStatus>("focus_overtime", { sessionId, expectedRevision });
 export const focusFinish = (
+  sessionId: number,
   outcome: FocusFinishOutcome,
   expectedRevision: number,
   interruptionReason?: string | null,
 ) =>
   invoke<FocusStatus>("focus_finish", {
+    sessionId,
     outcome,
     expectedRevision,
     interruptionReason: interruptionReason ?? null,
